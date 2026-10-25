@@ -530,50 +530,89 @@ button:disabled {
 }
 .board-error {
   position: fixed;
-  top: 86px;
+  top: 78px;
   left: 50%;
   z-index: 20;
-  display: flex;
-  justify-content: space-between;
-  gap: 14px;
-  width: min(640px, calc(100% - 24px));
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  width: min(680px, calc(100% - 32px));
   margin: 0;
-  padding: 14px 46px 14px 14px;
-  border: 2px solid #b42318;
-  border-radius: 12px;
-  background: #fff4f2;
-  color: #7a271a;
-  box-shadow: 0 8px 24px #5f160f2b;
+  padding: 14px 44px 14px 16px;
+  border: 1px solid #e7a39c;
+  border-left: 4px solid #c93d32;
+  border-radius: 14px;
+  background: #fffdfc;
+  color: #65251f;
+  box-shadow:
+    0 14px 34px #3e17132b,
+    0 3px 10px #3e17131a;
   transform: translateX(-50%);
+}
+.board-error::before {
+  content: "!";
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #fce2df;
+  color: #a52b22;
+  font-size: 14px;
+  font-weight: 800;
 }
 .board-error-copy {
   display: grid;
-  gap: 3px;
+  gap: 2px;
+  min-width: 0;
+  line-height: 1.35;
+}
+.board-error-copy b {
+  font-size: 15px;
+  font-weight: 750;
+}
+.board-error-copy span {
+  font-size: 14px;
+}
+.board-error-copy small {
+  color: #8a4b45;
+  font-size: 12px;
 }
 .board-error-actions {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
 }
 .board-error button {
-  min-height: 42px;
-  border: 1px solid #d92d20;
+  min-height: 36px;
+  border: 1px solid #df8f88;
   border-radius: 9px;
   background: #fff;
-  color: #7a271a;
-  font-weight: 800;
+  color: #742b25;
+  padding: 7px 11px;
+  font-size: 13px;
+  font-weight: 700;
   white-space: nowrap;
+}
+.board-error-actions button:last-child {
+  background: #fff3f1;
+}
+.board-error-actions button:hover {
+  border-color: #c93d32;
+  background: #fce7e4;
 }
 .board-error .board-error-dismiss {
   position: absolute;
-  top: 7px;
-  right: 7px;
-  width: 32px;
-  min-height: 32px;
+  top: 8px;
+  right: 8px;
+  width: 28px;
+  min-height: 28px;
   padding: 0;
   border: 0;
   background: transparent;
-  font-size: 24px;
+  color: #8a4b45;
+  font-size: 20px;
   line-height: 1;
 }
 .board {
@@ -625,6 +664,15 @@ button:disabled {
 .cell.dl {
   border-color: #a7ccc4;
   background: #c0ddd7;
+}
+.cell.tw,
+.cell.dw,
+.cell.tl,
+.cell.dl {
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.035em;
+  text-shadow: 0 1px #ffffff73;
 }
 .cell.start:not(:has(b)) {
   border-color: #bd8614;
@@ -946,11 +994,15 @@ button:disabled {
 @media (max-width: 800px) {
   .board-error {
     top: 62px;
-    flex-direction: column;
-    gap: 8px;
+    grid-template-columns: 24px minmax(0, 1fr);
+    gap: 8px 10px;
+    width: calc(100% - 18px);
+    padding: 13px 40px 13px 13px;
   }
   .board-error-actions {
+    grid-column: 1 / -1;
     align-self: stretch;
+    padding-left: 34px;
   }
   .board-error button {
     flex: 1;
@@ -1019,6 +1071,12 @@ button:disabled {
   .board {
     gap: 2px;
     padding: 6px;
+  }
+  .cell.tw,
+  .cell.dw,
+  .cell.tl,
+  .cell.dl {
+    font-size: 10px;
   }
   .timer-card strong {
     font-size: 46px;
