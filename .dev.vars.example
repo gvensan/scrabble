@@ -1,4 +1,4 @@
 # Local Worker-only values. Copy to apps/worker/.dev.vars when needed.
 # WordSoHard is keyless; no dictionary credential is currently required.
-ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174
 RATE_LIMIT_SALT=replace-with-a-long-random-local-value

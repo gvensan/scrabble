@@ -1,7 +1,7 @@
 import { chromium } from "playwright-core";
 import AxeBuilder from "@axe-core/playwright";
 
-const base = process.env.SQUABBLE_WEB_URL ?? "http://localhost:5173";
+const base = process.env.SQUABBLE_WEB_URL ?? "http://127.0.0.1:5174";
 const browser = await chromium.launch({
   headless: true,
   ...(process.env.PLAYWRIGHT_CHROMIUM_PATH

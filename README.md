@@ -19,7 +19,7 @@ npx --yes wrangler@4.61.1 dev --local --config apps/worker/wrangler.jsonc
 npm run dev
 ```
 
-Open `http://localhost:5173`. Use **Play online with friends** for a two-browser room or create a local pass-and-play game. Local mode intentionally uses a permissive demo validator; online mode uses the authoritative Worker and WordSoHard.
+Open `http://127.0.0.1:5174`. Use **Play online with friends** for a two-browser room or create a local pass-and-play game. Local mode intentionally uses a permissive demo validator; online mode uses the authoritative Worker and WordSoHard.
 
 ## Quality and deployment
 

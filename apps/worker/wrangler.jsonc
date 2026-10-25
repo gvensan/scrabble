@@ -1,7 +1,7 @@
 {
   "name": "squabble-worker",
   "main": "src/index.ts",
-  "compatibility_date": "2026-10-25",
+  "compatibility_date": "2026-01-28",
   "durable_objects": {
     "bindings": [
       { "name": "ROOM_DIRECTORY", "class_name": "RoomDirectory" },
@@ -12,6 +12,6 @@
     { "tag": "v1", "new_sqlite_classes": ["RoomDirectory", "Room"] },
   ],
   "vars": {
-    "ALLOWED_ORIGINS": "http://localhost:5173,http://127.0.0.1:5173",
+    "ALLOWED_ORIGINS": "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174",
   },
 }
