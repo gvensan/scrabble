@@ -15,6 +15,7 @@ import {
   type RandomSource,
 } from "@squabble/game-engine";
 import "./styles.css";
+import { recallLast } from "./draft.js";
 import { OnlineGame } from "./online.js";
 
 type Screen = "welcome" | "settings" | "lobby" | "game";
@@ -631,9 +632,10 @@ function App() {
             className="secondary"
             disabled={!draft.length}
             onClick={() => {
-              setDraft([]);
+              setDraft((placements) => recallLast(placements));
               setSelected(null);
             }}
+            aria-label="Recall last placed tile"
           >
             Recall
           </button>

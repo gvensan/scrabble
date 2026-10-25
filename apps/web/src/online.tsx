@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { shuffle } from "@squabble/game-engine";
 import type { PublicRoom, ServerMessage } from "@squabble/game-engine/protocol";
+import { recallLast } from "./draft.js";
 
 interface Tile {
   id: string;
@@ -686,32 +687,36 @@ export function OnlineGame({ nickname, onExit, theme, onThemeChange }: Props) {
               : "Waiting for another player")}
         </p>
         <div className="rack">
-          {seat?.rack.map((tile) => (
-            <button
-              key={tile.id}
-              className={
-                selected === tile.id || exchangeIds.includes(tile.id)
-                  ? "active"
-                  : ""
-              }
-              draggable={!exchangeMode}
-              onDragStart={(event) =>
-                event.dataTransfer.setData("text/tile-id", tile.id)
-              }
-              onClick={() => {
-                if (exchangeMode)
-                  setExchangeIds(
-                    exchangeIds.includes(tile.id)
-                      ? exchangeIds.filter((id) => id !== tile.id)
-                      : [...exchangeIds, tile.id],
-                  );
-                else setSelected(selected === tile.id ? null : tile.id);
-              }}
-            >
-              <b>{tile.letter ?? "□"}</b>
-              <small>{tile.value}</small>
-            </button>
-          ))}
+          {seat?.rack.map((tile) => {
+            const used = draft.some((item) => item.tileId === tile.id);
+            return (
+              <button
+                key={tile.id}
+                className={
+                  selected === tile.id || exchangeIds.includes(tile.id)
+                    ? "active"
+                    : ""
+                }
+                disabled={used}
+                draggable={!used && !exchangeMode}
+                onDragStart={(event) =>
+                  event.dataTransfer.setData("text/tile-id", tile.id)
+                }
+                onClick={() => {
+                  if (exchangeMode)
+                    setExchangeIds(
+                      exchangeIds.includes(tile.id)
+                        ? exchangeIds.filter((id) => id !== tile.id)
+                        : [...exchangeIds, tile.id],
+                    );
+                  else setSelected(selected === tile.id ? null : tile.id);
+                }}
+              >
+                <b>{tile.letter ?? "□"}</b>
+                <small>{tile.value}</small>
+              </button>
+            );
+          })}
         </div>
         <div className="minor" aria-label="Board zoom controls">
           <button onClick={() => setCellSize(Math.max(30, cellSize - 4))}>
@@ -738,7 +743,12 @@ export function OnlineGame({ nickname, onExit, theme, onThemeChange }: Props) {
           ))}
         </div>
         <div className="actions">
-          <button className="secondary" onClick={() => setDraft([])}>
+          <button
+            className="secondary"
+            disabled={!draft.length}
+            onClick={() => setDraft((placements) => recallLast(placements))}
+            aria-label="Recall last placed tile"
+          >
             Recall
           </button>
           <button

@@ -59,6 +59,20 @@ try {
     await host.getByRole("button", { name: "A", exact: true }).click();
   if ((await host.locator(".cell.pending").count()) !== 1)
     throw new Error("Drag placement did not create a draft.");
+  const nextCell = host.locator(".cell").nth(10 * 21 + 11);
+  await host.locator(".rack button:not(:disabled)").first().dragTo(nextCell);
+  if (
+    await host.getByRole("dialog", { name: "Choose blank letter" }).isVisible()
+  )
+    await host.getByRole("button", { name: "A", exact: true }).click();
+  if ((await host.locator(".cell.pending").count()) !== 2)
+    throw new Error("Second drag placement did not extend the draft.");
+  await host.getByRole("button", { name: "Recall last placed tile" }).click();
+  if ((await host.locator(".cell.pending").count()) !== 1)
+    throw new Error("Recall did not pop only the latest placement.");
+  await host.getByRole("button", { name: "Recall last placed tile" }).click();
+  if ((await host.locator(".cell.pending").count()) !== 0)
+    throw new Error("Second recall did not pop the previous placement.");
 
   const hostAxe = await new AxeBuilder({ page: host }).analyze();
   const guestAxe = await new AxeBuilder({ page: guest }).analyze();
