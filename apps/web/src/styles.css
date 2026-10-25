@@ -350,6 +350,54 @@ button:disabled {
 .timer.urgent {
   color: #b33f3f;
 }
+.timer-card {
+  display: grid;
+  gap: 3px;
+  padding: 15px;
+  border: 1px solid #9bc6ba;
+  border-radius: 15px;
+  background: linear-gradient(145deg, #edf8f4, #dcefe9);
+  color: #245d50;
+}
+.timer-card > div {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.timer-card span {
+  font-size: 12px;
+  font-weight: 850;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.timer-card strong {
+  font-size: clamp(38px, 5vw, 56px);
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.05em;
+}
+.timer-card small {
+  color: #476a61;
+}
+.timer-card button {
+  min-height: 34px;
+  border: 1px solid #9bc6ba;
+  border-radius: 18px;
+  background: #fff;
+  color: #245d50;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 5px 9px;
+}
+.timer-card.urgent {
+  border-color: #d92d20;
+  background: linear-gradient(145deg, #fff4f2, #ffd5cf);
+  color: #9b2117;
+}
+.timer-card.urgent small {
+  color: #7a271a;
+}
 .toolbar button,
 .minor button {
   border: 1px solid #d5dedb;
@@ -363,6 +411,41 @@ button:disabled {
   border-radius: 14px;
   padding: 5px;
   flex: 1;
+}
+.board-error {
+  position: sticky;
+  top: 8px;
+  left: 8px;
+  z-index: 6;
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  width: min(560px, calc(100% - 16px));
+  margin: 3px 3px 10px;
+  padding: 12px;
+  border: 2px solid #b42318;
+  border-radius: 12px;
+  background: #fff4f2;
+  color: #7a271a;
+  box-shadow: 0 8px 24px #5f160f2b;
+}
+.board-error > div:first-child {
+  display: grid;
+  gap: 3px;
+}
+.board-error > div:last-child {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.board-error button {
+  min-height: 42px;
+  border: 1px solid #d92d20;
+  border-radius: 9px;
+  background: #fff;
+  color: #7a271a;
+  font-weight: 800;
+  white-space: nowrap;
 }
 .board {
   display: grid;
@@ -401,6 +484,13 @@ button:disabled {
 .cell.pending {
   outline: 3px solid #327765;
   z-index: 1;
+}
+.cell.pending.invalid {
+  outline: 4px solid #d92d20;
+  background: #ffd5cf;
+  color: #641b13;
+  box-shadow: inset 0 0 0 2px #fff;
+  z-index: 2;
 }
 .cell b {
   font:
@@ -603,6 +693,16 @@ button:disabled {
   min-width: 44px;
 }
 @media (max-width: 800px) {
+  .board-error {
+    flex-direction: column;
+    gap: 8px;
+  }
+  .board-error > div:last-child {
+    align-self: stretch;
+  }
+  .board-error button {
+    flex: 1;
+  }
   .online-game {
     grid-template-columns: 1fr;
     grid-template-rows: auto minmax(300px, 1fr) auto;

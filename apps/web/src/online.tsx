@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { shuffle } from "@squabble/game-engine";
 import type { PublicRoom, ServerMessage } from "@squabble/game-engine/protocol";
 import { recallLast } from "./draft.js";
+import { formatClock, type GameSounds } from "./sound.js";
 
 interface Tile {
   id: string;
@@ -106,6 +107,7 @@ interface Props {
   onExit: () => void;
   theme: "garden" | "candy" | "midnight";
   onThemeChange: (theme: "garden" | "candy" | "midnight") => void;
+  sounds: GameSounds;
 }
 const viteEnv = import.meta.env as Record<string, unknown>;
 const configuredApi = viteEnv.VITE_API_BASE_URL;
@@ -123,7 +125,13 @@ const secureRandom = {
     return (value[0] ?? 0) % max;
   },
 };
-export function OnlineGame({ nickname, onExit, theme, onThemeChange }: Props) {
+export function OnlineGame({
+  nickname,
+  onExit,
+  theme,
+  onThemeChange,
+  sounds,
+}: Props) {
   const invite = new URLSearchParams(location.search).get("room") ?? "";
   const [mode, setMode] = useState<"choose" | "create" | "join" | "room">(
       invite ? "join" : "choose",
@@ -142,6 +150,7 @@ export function OnlineGame({ nickname, onExit, theme, onThemeChange }: Props) {
     [exchangeMode, setExchangeMode] = useState(false),
     [exchangeIds, setExchangeIds] = useState<string[]>([]),
     [confirmPass, setConfirmPass] = useState(false),
+    [confirmExchange, setConfirmExchange] = useState(false),
     [blankTarget, setBlankTarget] = useState<{
       tileId: string;
       row: number;
@@ -149,10 +158,15 @@ export function OnlineGame({ nickname, onExit, theme, onThemeChange }: Props) {
     } | null>(null),
     [draft, setDraft] = useState<
       { tileId: string; row: number; col: number; blankAs?: string }[]
-    >([]);
+    >([]),
+    [draftError, setDraftError] = useState<string | null>(null);
   const socket = useRef<WebSocket | null>(null),
     reconnectTimer = useRef<number | null>(null),
     stopped = useRef(false),
+    lastAction = useRef<string | null>(null),
+    soundedTurnRevision = useRef(-1),
+    warnedDeadline = useRef<number | null>(null),
+    endedDeadline = useRef<number | null>(null),
     revision = useRef(-1),
     me = room?.players.find((player) => player.id === seat?.playerId),
     draftMap = useMemo(
@@ -183,6 +197,38 @@ export function OnlineGame({ nickname, onExit, theme, onThemeChange }: Props) {
     const timer = window.setInterval(() => setNow(Date.now()), 250);
     return () => window.clearInterval(timer);
   }, [room?.turnDeadline]);
+  useEffect(() => {
+    if (
+      room?.phase === "active" &&
+      room.currentPlayerId === seat?.playerId &&
+      soundedTurnRevision.current !== room.revision
+    ) {
+      soundedTurnRevision.current = room.revision;
+      sounds.play(room.turnDeadline === null ? "turn" : "timer-start");
+    }
+  }, [room?.currentPlayerId, room?.phase, room?.revision, seat?.playerId]);
+  useEffect(() => {
+    const deadline = room?.turnDeadline;
+    if (
+      deadline === null ||
+      deadline === undefined ||
+      room?.currentPlayerId !== seat?.playerId
+    )
+      return;
+    const remaining = Math.ceil((deadline - now) / 1000);
+    if (
+      remaining <= 10 &&
+      remaining > 0 &&
+      warnedDeadline.current !== deadline
+    ) {
+      warnedDeadline.current = deadline;
+      sounds.play("warning");
+    }
+    if (remaining <= 0 && endedDeadline.current !== deadline) {
+      endedDeadline.current = deadline;
+      sounds.play("time-up");
+    }
+  }, [now, room?.currentPlayerId, room?.turnDeadline, seat?.playerId]);
   function connect(roomCode: string, token: string) {
     const ws = new WebSocket(
       `${wsBase}/ws?room=${encodeURIComponent(roomCode)}&token=${encodeURIComponent(token)}`,
@@ -201,6 +247,7 @@ export function OnlineGame({ nickname, onExit, theme, onThemeChange }: Props) {
             ? "This room has expired."
             : "Disconnected — reconnecting…"),
       );
+      if (event.code !== 1000) sounds.play("warning");
       if (
         !stopped.current &&
         event.code !== 1000 &&
@@ -217,14 +264,26 @@ export function OnlineGame({ nickname, onExit, theme, onThemeChange }: Props) {
         const message: unknown = JSON.parse(String(event.data));
         if (!isServerMessage(message)) throw new Error("Invalid message.");
         if (message.type === "room.snapshot") {
-          if (revision.current >= 0 && message.room.revision > revision.current)
+          if (
+            revision.current >= 0 &&
+            message.room.revision > revision.current
+          ) {
             setDraft([]);
+            setDraftError(null);
+            lastAction.current = null;
+          }
           revision.current = message.room.revision;
           setRoom(message.room);
           setStatus("");
         }
         if (message.type === "seat.private") setSeat(message.seat);
-        if (message.type === "error") setStatus(message.message);
+        if (message.type === "error") {
+          setStatus(message.message);
+          sounds.play("error");
+          if (lastAction.current === "game.play")
+            setDraftError(message.message);
+          lastAction.current = null;
+        }
         if (message.type === "game.pending") setStatus("Checking every word…");
       } catch {
         setStatus("Received an invalid server message.");
@@ -303,6 +362,8 @@ export function OnlineGame({ nickname, onExit, theme, onThemeChange }: Props) {
       setStatus("Not connected.");
       return;
     }
+    lastAction.current = type;
+    if (type === "game.play") setDraftError(null);
     socket.current.send(
       JSON.stringify({
         protocolVersion: 1,
@@ -324,6 +385,8 @@ export function OnlineGame({ nickname, onExit, theme, onThemeChange }: Props) {
       return;
     }
     setDraft([...draft, { tileId, row, col }]);
+    setDraftError(null);
+    setStatus("");
     setSelected(null);
   }
   if (mode !== "room")
@@ -613,22 +676,47 @@ export function OnlineGame({ nickname, onExit, theme, onThemeChange }: Props) {
             </span>
           ))}
         </div>
-        {room.turnDeadline && (
-          <b
-            className={`timer ${room.turnDeadline - now <= 30_000 ? "urgent" : ""}`}
-          >
-            {Math.floor(
-              Math.ceil(Math.max(0, room.turnDeadline - now) / 1000) / 60,
-            )}
-            :
-            {String(
-              Math.ceil(Math.max(0, room.turnDeadline - now) / 1000) % 60,
-            ).padStart(2, "0")}
-          </b>
-        )}
         <button onClick={exitRoom}>Exit</button>
       </header>
       <div className="online-board-scroll">
+        {draftError && draft.length > 0 && (
+          <div className="board-error" role="alert">
+            <div>
+              <b>That move cannot be played</b>
+              <span>{draftError}</span>
+              <small>Your provisional tiles are still on the board.</small>
+            </div>
+            <div>
+              <button
+                hidden={
+                  !/dictionary|unavailable|busy|timed out/i.test(draftError)
+                }
+                onClick={() => send("game.play", { placements: draft })}
+              >
+                Try again
+              </button>
+              <button
+                onClick={() => {
+                  setDraft((placements) => recallLast(placements));
+                  setDraftError(null);
+                  setStatus("Last tile returned to your rack.");
+                }}
+              >
+                Undo last
+              </button>
+              <button
+                onClick={() => {
+                  setDraft([]);
+                  setSelected(null);
+                  setDraftError(null);
+                  setStatus("Move reset — all tiles returned to your rack.");
+                }}
+              >
+                Reset move
+              </button>
+            </div>
+          </div>
+        )}
         <div
           className="board"
           style={{
@@ -648,10 +736,11 @@ export function OnlineGame({ nickname, onExit, theme, onThemeChange }: Props) {
               return (
                 <button
                   key={`${r}:${c}`}
-                  className={`cell ${cell.premium?.toLowerCase() ?? ""} ${pending ? "pending" : ""}`}
+                  className={`cell ${cell.premium?.toLowerCase() ?? ""} ${pending ? "pending" : ""} ${pending && draftError ? "invalid" : ""}`}
+                  aria-invalid={pending && draftError ? true : undefined}
                   aria-label={
                     tile
-                      ? `${"blankAs" in tile && tile.blankAs ? tile.blankAs : (tile.letter ?? "blank")}, ${tile.value} points`
+                      ? `${draftError && pending ? "Invalid provisional tile, " : ""}${"blankAs" in tile && tile.blankAs ? tile.blankAs : (tile.letter ?? "blank")}, ${tile.value} points`
                       : (cell.premium ?? "Empty cell")
                   }
                   onClick={() => selected && place(selected, r, c)}
@@ -680,6 +769,34 @@ export function OnlineGame({ nickname, onExit, theme, onThemeChange }: Props) {
         </div>
       </div>
       <aside>
+        <div
+          className={`timer-card ${room.turnDeadline && room.turnDeadline - now <= 20_000 ? "urgent" : ""}`}
+          role="timer"
+          aria-label="Turn timer"
+        >
+          <div>
+            <span>Turn timer</span>
+            <button
+              onClick={sounds.toggleMuted}
+              aria-pressed={sounds.muted}
+              title={sounds.muted ? "Turn sounds on" : "Mute game sounds"}
+            >
+              {sounds.muted ? "Sound off" : "Sound on"}
+            </button>
+          </div>
+          <strong>
+            {room.turnDeadline === null
+              ? "No limit"
+              : formatClock((room.turnDeadline - now) / 1000)}
+          </strong>
+          <small>
+            {room.turnDeadline === null
+              ? "No automatic pass"
+              : room.currentPlayerId === seat?.playerId
+                ? "Your time remaining"
+                : `${room.players.find((player) => player.id === room.currentPlayerId)?.nickname ?? "Player"}'s time remaining`}
+          </small>
+        </div>
         <p className="status">
           {status ||
             (room.currentPlayerId === seat?.playerId
@@ -746,7 +863,11 @@ export function OnlineGame({ nickname, onExit, theme, onThemeChange }: Props) {
           <button
             className="secondary"
             disabled={!draft.length}
-            onClick={() => setDraft((placements) => recallLast(placements))}
+            onClick={() => {
+              setDraft((placements) => recallLast(placements));
+              setDraftError(null);
+              setStatus("Last tile returned to your rack.");
+            }}
             aria-label="Recall last placed tile"
           >
             Recall
@@ -783,7 +904,10 @@ export function OnlineGame({ nickname, onExit, theme, onThemeChange }: Props) {
             {exchangeMode ? "Cancel exchange" : "Exchange"}
           </button>
           <button
-            onClick={() => setConfirmPass(true)}
+            onClick={() => {
+              setConfirmPass(true);
+              sounds.play("warning");
+            }}
             disabled={room.currentPlayerId !== seat?.playerId}
           >
             Pass
@@ -796,9 +920,8 @@ export function OnlineGame({ nickname, onExit, theme, onThemeChange }: Props) {
               !exchangeIds.length || room.currentPlayerId !== seat?.playerId
             }
             onClick={() => {
-              send("game.exchange", { tileIds: exchangeIds });
-              setExchangeMode(false);
-              setExchangeIds([]);
+              setConfirmExchange(true);
+              sounds.play("warning");
             }}
           >
             Exchange {exchangeIds.length} selected
@@ -825,6 +948,8 @@ export function OnlineGame({ nickname, onExit, theme, onThemeChange }: Props) {
                   key={letter}
                   onClick={() => {
                     setDraft([...draft, { ...blankTarget, blankAs: letter }]);
+                    setDraftError(null);
+                    setStatus("");
                     setBlankTarget(null);
                     setSelected(null);
                   }}
@@ -836,6 +961,38 @@ export function OnlineGame({ nickname, onExit, theme, onThemeChange }: Props) {
             <button className="secondary" onClick={() => setBlankTarget(null)}>
               Cancel
             </button>
+          </div>
+        </div>
+      )}
+      {confirmExchange && (
+        <div
+          className="overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Confirm exchange"
+        >
+          <div>
+            <h2>Exchange {exchangeIds.length} selected tiles?</h2>
+            <p>This uses your turn and counts as a scoreless move.</p>
+            <div className="actions">
+              <button
+                className="secondary"
+                onClick={() => setConfirmExchange(false)}
+              >
+                Keep tiles
+              </button>
+              <button
+                className="danger"
+                onClick={() => {
+                  send("game.exchange", { tileIds: exchangeIds });
+                  setConfirmExchange(false);
+                  setExchangeMode(false);
+                  setExchangeIds([]);
+                }}
+              >
+                Exchange tiles
+              </button>
+            </div>
           </div>
         </div>
       )}

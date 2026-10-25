@@ -17,6 +17,7 @@ import {
 import "./styles.css";
 import { recallLast } from "./draft.js";
 import { OnlineGame } from "./online.js";
+import { formatClock, useGameSounds } from "./sound.js";
 
 type Screen = "welcome" | "settings" | "lobby" | "game";
 type Theme = "garden" | "candy" | "midnight";
@@ -37,6 +38,7 @@ const premiumName = {
 } as const;
 
 function App() {
+  const sounds = useGameSounds();
   const [online, setOnline] = useState(() =>
     new URLSearchParams(location.search).has("room"),
   );
@@ -57,6 +59,7 @@ function App() {
   const [game, setGame] = useState<GameState | null>(null),
     [selected, setSelected] = useState<string | null>(null),
     [draft, setDraft] = useState<Placement[]>([]),
+    [draftError, setDraftError] = useState<string | null>(null),
     [message, setMessage] = useState("Choose a tile, then a board cell."),
     [concealed, setConcealed] = useState(true),
     [cellSize, setCellSize] = useState(38);
@@ -88,6 +91,10 @@ function App() {
     localStorage.setItem("squabble.theme", theme);
   }, [theme]);
   useEffect(() => {
+    if (game?.phase === "active" && !concealed)
+      sounds.play(game.settings.timerSeconds === 0 ? "turn" : "timer-start");
+  }, [concealed, game?.phase, game?.turnNumber]);
+  useEffect(() => {
     if (
       game?.phase !== "active" ||
       game.settings.timerSeconds === 0 ||
@@ -101,16 +108,27 @@ function App() {
     }
     const turnNumber = game.turnNumber;
     const deadline = Date.now() + game.settings.timerSeconds * 1000;
+    let warned = false;
+    let ended = false;
     const tick = () => {
       const remaining = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
       setSecondsLeft(remaining);
+      if (remaining <= 10 && remaining > 0 && !warned) {
+        warned = true;
+        sounds.play("warning");
+      }
       if (remaining === 0) {
+        if (!ended) {
+          ended = true;
+          sounds.play("time-up");
+        }
         setGame((state) =>
           state?.phase === "active" && state.turnNumber === turnNumber
             ? passTurn(state)
             : state,
         );
         setDraft([]);
+        setDraftError(null);
         setSelected(null);
         setConcealed(true);
         setMessage("Time expired — the turn was passed.");
@@ -146,6 +164,7 @@ function App() {
   const next = (state: GameState, text: string) => {
     setGame(state);
     setDraft([]);
+    setDraftError(null);
     setSelected(null);
     setExchangeMode(false);
     setExchangeIds([]);
@@ -167,6 +186,7 @@ function App() {
       return;
     }
     setDraft([...draft, { tileId: tile.id, row, col }]);
+    setDraftError(null);
     setSelected(null);
     setMessage("Draft updated — add tiles or play the word.");
   };
@@ -176,6 +196,7 @@ function App() {
   const assignBlank = (blankAs: Letter) => {
     if (!blankTarget) return;
     setDraft([...draft, { ...blankTarget, blankAs }]);
+    setDraftError(null);
     setBlankTarget(null);
     setSelected(null);
   };
@@ -184,6 +205,8 @@ function App() {
     const result = playMove(game, draft, demoValidator);
     if (!result.ok) {
       setMessage(result.error);
+      setDraftError(result.error);
+      sounds.play("error");
       return;
     }
     next(
@@ -197,6 +220,7 @@ function App() {
     if (!result.ok) {
       setMessage(result.error);
       setConfirm(null);
+      sounds.play("error");
       return;
     }
     next(
@@ -211,6 +235,7 @@ function App() {
         onExit={() => setOnline(false)}
         theme={theme}
         onThemeChange={setTheme}
+        sounds={sounds}
       />
     );
   if (screen === "welcome")
@@ -502,15 +527,7 @@ function App() {
       </header>
       <section className="play">
         <div className="toolbar">
-          <b>
-            ● {current?.name}'s turn
-            {secondsLeft !== null && (
-              <span className={secondsLeft <= 20 ? "timer urgent" : "timer"}>
-                {Math.floor(secondsLeft / 60)}:
-                {String(secondsLeft % 60).padStart(2, "0")}
-              </span>
-            )}
-          </b>
+          <b>● {current?.name}'s turn</b>
           <div>
             <button onClick={() => setCellSize(Math.max(26, cellSize - 4))}>
               −
@@ -522,6 +539,36 @@ function App() {
           </div>
         </div>
         <div className="board-scroll">
+          {draftError && draft.length > 0 && (
+            <div className="board-error" role="alert">
+              <div>
+                <b>That move cannot be played</b>
+                <span>{draftError}</span>
+                <small>Your provisional tiles are still on the board.</small>
+              </div>
+              <div>
+                <button
+                  onClick={() => {
+                    setDraft((placements) => recallLast(placements));
+                    setDraftError(null);
+                    setMessage("Last tile returned to your rack.");
+                  }}
+                >
+                  Undo last
+                </button>
+                <button
+                  onClick={() => {
+                    setDraft([]);
+                    setSelected(null);
+                    setDraftError(null);
+                    setMessage("Move reset — all tiles returned to your rack.");
+                  }}
+                >
+                  Reset move
+                </button>
+              </div>
+            </div>
+          )}
           <div
             className="board"
             style={{
@@ -543,11 +590,12 @@ function App() {
                 return (
                   <button
                     key={`${r}:${c}`}
-                    className={`cell ${cell.premium?.toLowerCase() ?? ""} ${pending ? "pending" : ""}`}
+                    className={`cell ${cell.premium?.toLowerCase() ?? ""} ${pending ? "pending" : ""} ${pending && draftError ? "invalid" : ""}`}
+                    aria-invalid={pending && draftError ? true : undefined}
                     style={{ width: cellSize, height: cellSize }}
                     aria-label={
                       tile
-                        ? `${letter}, ${tile.value} points`
+                        ? `${draftError && pending ? "Invalid provisional tile, " : ""}${letter}, ${tile.value} points`
                         : cell.premium
                           ? premiumName[cell.premium]
                           : starts.has(`${r}:${c}`)
@@ -581,6 +629,32 @@ function App() {
         </div>
       </section>
       <aside>
+        <div
+          className={`timer-card ${secondsLeft !== null && secondsLeft <= 20 ? "urgent" : ""}`}
+          role="timer"
+          aria-label="Turn timer"
+        >
+          <div>
+            <span>Turn timer</span>
+            <button
+              onClick={sounds.toggleMuted}
+              aria-pressed={sounds.muted}
+              title={sounds.muted ? "Turn sounds on" : "Mute game sounds"}
+            >
+              {sounds.muted ? "Sound off" : "Sound on"}
+            </button>
+          </div>
+          <strong>
+            {secondsLeft === null ? "No limit" : formatClock(secondsLeft)}
+          </strong>
+          <small>
+            {secondsLeft === null
+              ? "Take your time"
+              : secondsLeft <= 10
+                ? "Finish your move now"
+                : `${current?.name}'s time remaining`}
+          </small>
+        </div>
         <div className="validator">
           <b>Demo validator</b>
           <small>
@@ -633,7 +707,9 @@ function App() {
             disabled={!draft.length}
             onClick={() => {
               setDraft((placements) => recallLast(placements));
+              setDraftError(null);
               setSelected(null);
+              setMessage("Last tile returned to your rack.");
             }}
             aria-label="Recall last placed tile"
           >
@@ -667,13 +743,23 @@ function App() {
           >
             {exchangeMode ? "Cancel" : "Exchange"}
           </button>
-          <button onClick={() => setConfirm("pass")}>Pass</button>
+          <button
+            onClick={() => {
+              setConfirm("pass");
+              sounds.play("warning");
+            }}
+          >
+            Pass
+          </button>
         </div>
         {exchangeMode && (
           <button
             className="primary wide"
             disabled={!exchangeIds.length}
-            onClick={() => setConfirm("exchange")}
+            onClick={() => {
+              setConfirm("exchange");
+              sounds.play("warning");
+            }}
           >
             Exchange {exchangeIds.length} selected
           </button>

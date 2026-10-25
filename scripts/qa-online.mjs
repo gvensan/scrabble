@@ -49,7 +49,7 @@ try {
     throw new Error("Host rack is not private and complete.");
   if ((await guest.locator(".rack button").count()) !== 7)
     throw new Error("Guest rack is not private and complete.");
-  await host.locator("header .timer").waitFor();
+  await host.locator("aside .timer-card").waitFor();
 
   const center = host.locator(".cell").nth(10 * 21 + 10);
   await host.locator(".rack button").first().dragTo(center);
@@ -73,6 +73,44 @@ try {
   await host.getByRole("button", { name: "Recall last placed tile" }).click();
   if ((await host.locator(".cell.pending").count()) !== 0)
     throw new Error("Second recall did not pop the previous placement.");
+  const timerText = await host
+    .locator("aside .timer-card strong")
+    .textContent();
+  if (!timerText?.match(/^\d+:\d{2}$/))
+    throw new Error("The authoritative timer is not prominent in the sidebar.");
+  await host.getByRole("button", { name: "Sound on" }).click();
+  await host.getByRole("button", { name: "Sound off" }).click();
+
+  await host.locator(".rack button:not(:disabled)").first().dragTo(center);
+  if (
+    await host.getByRole("dialog", { name: "Choose blank letter" }).isVisible()
+  )
+    await host.getByRole("button", { name: "A", exact: true }).click();
+  await host.getByRole("button", { name: "Play", exact: true }).click();
+  await host.getByText("That move cannot be played").waitFor();
+  if ((await host.locator(".cell.invalid").count()) !== 1)
+    throw new Error("Rejected move was not highlighted on the board.");
+  await host.screenshot({
+    path: "artifacts/screenshots/15-invalid-move-rollback-desktop.png",
+    fullPage: true,
+  });
+  await host.setViewportSize({ width: 375, height: 812 });
+  if (
+    await host.evaluate(
+      () =>
+        document.documentElement.scrollWidth >
+        document.documentElement.clientWidth,
+    )
+  )
+    throw new Error("Invalid-move controls cause phone page overflow.");
+  await host.screenshot({
+    path: "artifacts/screenshots/16-invalid-move-rollback-phone.png",
+    fullPage: true,
+  });
+  await host.setViewportSize({ width: 1440, height: 900 });
+  await host.getByRole("button", { name: "Reset move" }).click();
+  if ((await host.locator(".cell.pending").count()) !== 0)
+    throw new Error("Reset move did not return every provisional tile.");
 
   const hostAxe = await new AxeBuilder({ page: host }).analyze();
   const guestAxe = await new AxeBuilder({ page: guest }).analyze();
@@ -131,6 +169,10 @@ try {
       phoneOverflow: false,
       lobbyLeave: true,
       hostClose: true,
+      invalidMoveHighlight: true,
+      rollback: true,
+      sidebarTimer: true,
+      soundToggle: true,
     }),
   );
 } finally {

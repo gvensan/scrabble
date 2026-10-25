@@ -9,6 +9,7 @@ Date: 2026-10-25
 - Production origin allowlisting, WebSocket origin checks, hashed admission keys, bounded messages, creator/join throttles, room-code tombstones, and transient dictionary caching are configured.
 - A real local Worker smoke test created two browser contexts on a 21×21 timed board, joined and started the room, delivered distinct seven-tile private racks, created a drag/drop draft, rendered the Candy theme, transferred an explicit lobby leave immediately, and closed a lobby at the host's request.
 - Axe found zero violations in the host and 375×812 guest game views; the phone document had no horizontal page overflow. Screenshots `13-online-21-candy-desktop.png` and `14-online-21-candy-phone.png` record this run.
+- Rejected drafts are highlighted directly on the board with accessible error text, LIFO undo and full-reset recovery. A prominent sidebar countdown and optional synthesized cues announce turns, warnings, errors and time expiry without downloading media or bypassing browser autoplay controls. Screenshots `15-invalid-move-rollback-desktop.png` and `16-invalid-move-rollback-phone.png` cover the recovery state.
 - `npm run check`, Wrangler dry-run packaging, and `npm audit --audit-level=high` pass; 38 automated tests pass and the web bundle is about 259 kB (80 kB gzip).
 
 ## Deployment status
