@@ -26,6 +26,13 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+      - name: Validate Worker secrets
+        env:
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+          RATE_LIMIT_SALT: ${{ secrets.RATE_LIMIT_SALT }}
+        run: |
+          test -n "$RATE_LIMIT_SALT" || { echo "::error::RATE_LIMIT_SALT secret is missing"; exit 1; }
+          test ${#ADMIN_TOKEN} -ge 24 || { echo "::error::ADMIN_TOKEN secret is missing or shorter than 24 characters"; exit 1; }
       - name: Deploy Worker
         uses: cloudflare/wrangler-action@v4
         with:
@@ -35,8 +42,13 @@ jobs:
           command: deploy
           vars: |
             ALLOWED_ORIGINS
+            ROOM_CREATE_LIMIT
           secrets: |
             RATE_LIMIT_SALT
+            ADMIN_TOKEN
         env:
           ALLOWED_ORIGINS: ${{ vars.ALLOWED_ORIGINS }}
+          # Optional; the Worker falls back to 10 rooms per network per hour.
+          ROOM_CREATE_LIMIT: ${{ vars.ROOM_CREATE_LIMIT }}
           RATE_LIMIT_SALT: ${{ secrets.RATE_LIMIT_SALT }}
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}

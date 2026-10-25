@@ -1,4 +1,4 @@
-Below is the recommended setup for gvensan/squabble. Do not paste the Cloudflare token into chat, source files, .env, or shell arguments.
+Below is the recommended setup for gvensan/scrabble. Do not paste the Cloudflare token into chat, source files, .env, or shell arguments.
 
 ## 1. Create or open your Cloudflare account
 
@@ -58,7 +58,7 @@ Creating a new Worker currently requires product-level Workers Admin access. Dur
 
 Open:
 
-github.com/gvensan/squabble/settings/secrets/actions
+github.com/gvensan/scrabble/settings/secrets/actions
 
 Select New repository secret and add:
 
@@ -70,14 +70,21 @@ Then add:
 Name: CLOUDFLARE_ACCOUNT_ID
 Value: the Account ID from step 2
 
+Then add the admin dashboard token. Generate it straight into GitHub so it never appears on screen or in shell history:
+
+openssl rand -base64 32 | tr -d '/+=\n' | gh secret set ADMIN_TOKEN --repo gvensan/scrabble
+
+To open the deployed dashboard you will need the value once per browser tab. Keep a copy in your password manager: generate it there instead, then run gh secret set ADMIN_TOKEN --repo gvensan/scrabble and paste it at the hidden prompt.
+
 RATE_LIMIT_SALT is already configured. GitHub encrypts Actions secrets and only exposes them to workflows that explicitly reference them. GitHub secret instructions.
 
 You can verify the names without exposing their values:
 
-gh secret list --repo gvensan/squabble
+gh secret list --repo gvensan/scrabble
 
 You should see:
 
+ADMIN_TOKEN
 CLOUDFLARE_ACCOUNT_ID
 CLOUDFLARE_API_TOKEN
 RATE_LIMIT_SALT
@@ -86,7 +93,7 @@ RATE_LIMIT_SALT
 
 Open:
 
-github.com/gvensan/squabble/actions/workflows/worker.yml
+github.com/gvensan/scrabble/actions/workflows/worker.yml
 
 Then:
 
@@ -101,7 +108,7 @@ The workflow will:
 - Run the complete test/build gate.
 - Create squabble-worker.
 - Create its two SQLite-backed Durable Object namespaces.
-- Install RATE_LIMIT_SALT as an encrypted Worker secret.
+- Install RATE_LIMIT_SALT and ADMIN_TOKEN as encrypted Worker secrets.
 - Configure the GitHub Pages origin.
 - Deploy to workers.dev.
 
@@ -127,7 +134,7 @@ If this fails, do not continue to Pages yet.
 
 Open:
 
-github.com/gvensan/squabble/settings/variables/actions
+github.com/gvensan/scrabble/settings/variables/actions
 
 Add these repository variables, substituting your real Worker hostname and omitting any trailing slash:
 
@@ -146,6 +153,8 @@ Important:
 
 ALLOWED_ORIGINS=https://gvensan.github.io is already configured.
 
+Optional: add ROOM_CREATE_LIMIT (rooms one network may create per hour). Without it the Worker allows 10.
+
 ## 8. Enable automatic Worker deployment
 
 On the same GitHub Variables page, add:
@@ -160,7 +169,7 @@ Future Worker-related pushes to main can now deploy automatically.
 In GitHub:
 
 1. Open Repository Settings → Pages.
-2. Under Build and deployment, set Source to GitHub Actions.
+2. Under Build and deployment, set Source to GitHub Actions. If it says Deploy from a branch, change it: that mode publishes the raw source folder, which shows a blank page.
 3. Save if prompted.
 
 Then return to repository variables and add:
@@ -172,7 +181,7 @@ true
 
 Open:
 
-github.com/gvensan/squabble/actions/workflows/pages.yml
+github.com/gvensan/scrabble/actions/workflows/pages.yml
 
 Then:
 
@@ -183,24 +192,25 @@ Then:
 
 The resulting application should be available at:
 
-https://gvensan.github.io/squabble/
+https://gvensan.github.io/scrabble/
 
 GitHub’s current Pages workflow uses configure-pages, upload-pages-artifact, and deploy-pages, as configured in the repository. GitHub Pages workflow documentation.
 
 ## 11. Smoke-test production
 
-1. Open https://gvensan.github.io/squabble/.
+1. Open https://gvensan.github.io/scrabble/.
 2. Enter a nickname.
 3. Select Play online with friends.
 4. Create a room.
 5. Open the invite URL in an incognito window or another device.
 6. Join with another nickname.
-7. Ready both players and start.
+7. Start the game as the host.
 8. Confirm both players receive seven different private rack tiles.
 9. Test tap placement and drag-and-drop.
 10. Submit a valid word.
 11. Refresh one browser and confirm it reconnects to the same private seat.
 12. Test pass, exchange, theme switching, and leave.
+13. Open https://gvensan.github.io/scrabble/#/adminit, sign in with ADMIN_TOKEN, and confirm the room appears.
 
 ## 12. Replace the bootstrap token with a narrower token
 

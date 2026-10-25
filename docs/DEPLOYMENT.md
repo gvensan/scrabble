@@ -12,6 +12,8 @@ Create a `production` environment and configure:
 - Variable `VITE_API_BASE_URL`: deployed Worker HTTPS origin.
 - Variable `VITE_WS_BASE_URL`: deployed Worker WSS origin.
 - Secret `RATE_LIMIT_SALT`: a generated random value used to pseudonymize admission-rate keys.
+- Secret `ADMIN_TOKEN`: at least 24 random characters; unlocks `#/adminit`. The Worker workflow refuses to deploy without it.
+- Variable `ROOM_CREATE_LIMIT` (optional): rooms one network may create per hour, default 10.
 - Variables `WORKER_DEPLOY_ENABLED` and `PAGES_DEPLOY_ENABLED`: set each to `true` only after its required values are configured. This keeps initial repository pushes green instead of publishing a half-configured app.
 
 The Worker workflow transfers `RATE_LIMIT_SALT` from GitHub Secrets into Cloudflare's encrypted Worker-secret store. It is used only to pseudonymize admission-rate keys and must not be a `VITE_*` value.
