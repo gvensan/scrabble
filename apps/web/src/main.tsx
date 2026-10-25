@@ -541,12 +541,19 @@ function App() {
         <div className="board-scroll">
           {draftError && draft.length > 0 && (
             <div className="board-error" role="alert">
-              <div>
+              <button
+                className="board-error-dismiss"
+                aria-label="Dismiss move error"
+                onClick={() => setDraftError(null)}
+              >
+                ×
+              </button>
+              <div className="board-error-copy">
                 <b>That move cannot be played</b>
                 <span>{draftError}</span>
                 <small>Your provisional tiles are still on the board.</small>
               </div>
-              <div>
+              <div className="board-error-actions">
                 <button
                   onClick={() => {
                     setDraft((placements) => recallLast(placements));

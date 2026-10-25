@@ -108,6 +108,14 @@ try {
     fullPage: true,
   });
   await host.setViewportSize({ width: 1440, height: 900 });
+  await host.getByRole("button", { name: "Dismiss move error" }).click();
+  await host
+    .getByText("That move cannot be played")
+    .waitFor({ state: "hidden" });
+  if ((await host.locator(".cell.pending").count()) !== 1)
+    throw new Error("Dismissing the toast unexpectedly changed the draft.");
+  await host.getByRole("button", { name: "Play", exact: true }).click();
+  await host.getByText("That move cannot be played").waitFor();
   await host.getByRole("button", { name: "Reset move" }).click();
   if ((await host.locator(".cell.pending").count()) !== 0)
     throw new Error("Reset move did not return every provisional tile.");

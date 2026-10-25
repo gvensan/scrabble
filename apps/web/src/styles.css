@@ -413,27 +413,28 @@ button:disabled {
   flex: 1;
 }
 .board-error {
-  position: sticky;
-  top: 8px;
-  left: 8px;
-  z-index: 6;
+  position: fixed;
+  top: 86px;
+  left: 50%;
+  z-index: 20;
   display: flex;
   justify-content: space-between;
   gap: 14px;
-  width: min(560px, calc(100% - 16px));
-  margin: 3px 3px 10px;
-  padding: 12px;
+  width: min(640px, calc(100% - 24px));
+  margin: 0;
+  padding: 14px 46px 14px 14px;
   border: 2px solid #b42318;
   border-radius: 12px;
   background: #fff4f2;
   color: #7a271a;
   box-shadow: 0 8px 24px #5f160f2b;
+  transform: translateX(-50%);
 }
-.board-error > div:first-child {
+.board-error-copy {
   display: grid;
   gap: 3px;
 }
-.board-error > div:last-child {
+.board-error-actions {
   display: flex;
   align-items: center;
   gap: 7px;
@@ -446,6 +447,18 @@ button:disabled {
   color: #7a271a;
   font-weight: 800;
   white-space: nowrap;
+}
+.board-error .board-error-dismiss {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 32px;
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: 24px;
+  line-height: 1;
 }
 .board {
   display: grid;
@@ -694,10 +707,11 @@ button:disabled {
 }
 @media (max-width: 800px) {
   .board-error {
+    top: 62px;
     flex-direction: column;
     gap: 8px;
   }
-  .board-error > div:last-child {
+  .board-error-actions {
     align-self: stretch;
   }
   .board-error button {
