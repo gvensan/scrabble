@@ -12,7 +12,7 @@ import {
   shuffle,
   type BoardCell,
   type Letter,
-} from "@squabble/game-engine";
+} from "@scrabble/game-engine";
 import {
   CLOSE_ROOM_GONE,
   CLOSE_SEAT_REJECTED,
@@ -21,7 +21,7 @@ import {
   type PublicRoom,
   type RoomStatus,
   type ServerMessage,
-} from "@squabble/game-engine/protocol";
+} from "@scrabble/game-engine/protocol";
 import {
   MAX_CELL,
   MIN_CELL,
@@ -319,7 +319,7 @@ export function OnlineGame({
   useEffect(() => {
     stopped.current = false;
     if (invite) {
-      const saved = sessionStorage.getItem(`squabble.room.${invite}`);
+      const saved = sessionStorage.getItem(`scrabble.room.${invite}`);
       if (saved) {
         setMode("room");
         setStatus("Reconnecting…");
@@ -421,7 +421,7 @@ export function OnlineGame({
       socket.current = null;
       if (FINAL_CLOSES.has(event.code)) {
         if (event.code !== 4001) {
-          sessionStorage.removeItem(`squabble.room.${roomCode}`);
+          sessionStorage.removeItem(`scrabble.room.${roomCode}`);
           setRoom(null);
         }
         if (event.code !== 1000) sounds.play("warning");
@@ -544,7 +544,7 @@ export function OnlineGame({
       if (kind === "join") void checkRoom(roomCode);
       return;
     }
-    sessionStorage.setItem(`squabble.room.${result.roomCode}`, result.token);
+    sessionStorage.setItem(`scrabble.room.${result.roomCode}`, result.token);
     setCode(result.roomCode);
     if (result.snapshot && !isPublicRoom(result.snapshot)) {
       setStatus("The server returned an invalid room state.");
@@ -568,13 +568,13 @@ export function OnlineGame({
       window.clearTimeout(reconnectTimer.current);
     const previous = socket.current;
     socket.current = null;
-    sessionStorage.removeItem(`squabble.room.${code}`);
+    sessionStorage.removeItem(`scrabble.room.${code}`);
     return previous;
   }
   function exitRoom() {
     if (room && socket.current?.readyState === WebSocket.OPEN)
       send("room.leave");
-    sessionStorage.removeItem(`squabble.room.${code}`);
+    sessionStorage.removeItem(`scrabble.room.${code}`);
     stopped.current = true;
     socket.current?.close();
     socket.current = null;
@@ -621,8 +621,8 @@ export function OnlineGame({
     try {
       if (typeof navigator.share === "function") {
         await navigator.share({
-          title: "Join my Squabble game",
-          text: `Join my Squabble game. Room code ${room?.roomCode ?? code}.`,
+          title: "Join my Scrabble game",
+          text: `Join my Scrabble game. Room code ${room?.roomCode ?? code}.`,
           url,
         });
         return;
@@ -701,7 +701,7 @@ export function OnlineGame({
         <header className="top">
           <button onClick={onExit}>← Back</button>
           <div className="brand small">
-            <span>S</span>Squabble
+            <span>S</span>Scrabble
           </div>
         </header>
         <section className="card online-entry">
@@ -1014,7 +1014,7 @@ export function OnlineGame({
   }
   return (
     <main className="online-game">
-      <h1 className="sr-only">Squabble online game board</h1>
+      <h1 className="sr-only">Scrabble online game board</h1>
       <header>
         <b>Room {room.roomCode}</b>
         <div className="scores">

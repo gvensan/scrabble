@@ -2,7 +2,7 @@
 
 Scrabble is a live, room-based word-board game for 2–4 friends. It supports local pass-and-play and authoritative online multiplayer with private racks, reconnectable guest seats, server-validated words, prominent optional turn clocks, accessible tap or drag placement, board zoom, rollback controls, optional sound cues, and Garden, Candy, and Midnight themes.
 
-Play it at https://gvensan.github.io/scrabble/ (source: https://github.com/gvensan/scrabble).
+Play it at https://scrabble.vainko.in/ (source: https://github.com/gvensan/scrabble).
 
 The static React client is designed for GitHub Pages. A Cloudflare Worker coordinates rooms through SQLite-backed Durable Objects and hibernating WebSockets; WordSoHard validates every word formed by an online move.
 

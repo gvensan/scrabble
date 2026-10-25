@@ -22,7 +22,7 @@ import {
   type Letter,
   type Placement,
   type RandomSource,
-} from "@squabble/game-engine";
+} from "@scrabble/game-engine";
 import "./styles.css";
 import {
   MAX_CELL,
@@ -65,7 +65,7 @@ function App() {
   const [where, setWhere] = useState<"online" | "device">("online");
   const [screen, setScreen] = useState<Screen>("welcome"),
     [nickname, setNickname] = useState(
-      () => sessionStorage.getItem("squabble.nickname") ?? "",
+      () => sessionStorage.getItem("scrabble.nickname") ?? "",
     );
   const [settings, setSettings] = useState<GameSettings>({
       boardSize: 15,
@@ -76,7 +76,7 @@ function App() {
     [names, setNames] = useState(["", "Player 2"]),
     [ready, setReady] = useState([true, true]);
   const [theme, setTheme] = useState<Theme>(
-    () => (localStorage.getItem("squabble.theme") as Theme | null) ?? "garden",
+    () => (localStorage.getItem("scrabble.theme") as Theme | null) ?? "garden",
   );
   const [game, setGame] = useState<GameState | null>(null),
     [selected, setSelected] = useState<string | null>(null),
@@ -137,7 +137,7 @@ function App() {
   usePinchZoom(boardViewport, cellSize, setCellSize, game?.phase === "active");
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    localStorage.setItem("squabble.theme", theme);
+    localStorage.setItem("scrabble.theme", theme);
   }, [theme]);
   const fitBoard = useCallback(() => {
     if (game)
@@ -204,7 +204,7 @@ function App() {
   const continueWelcome = () => {
     const name = nickname.trim().slice(0, 20);
     if (!name) return;
-    sessionStorage.setItem("squabble.nickname", name);
+    sessionStorage.setItem("scrabble.nickname", name);
     setNickname(name);
     setNames([name, "Player 2"]);
     setScreen("settings");
@@ -335,7 +335,7 @@ function App() {
     return (
       <main className="welcome shell">
         <div className="brand">
-          <span>S</span>Squabble
+          <span>S</span>Scrabble
         </div>
         <section className="card">
           <p className="eyebrow">Words with friends, minus the fuss</p>
@@ -372,7 +372,7 @@ function App() {
             className="secondary wide"
             onClick={() => {
               const name = nickname.trim().slice(0, 20);
-              if (name) sessionStorage.setItem("squabble.nickname", name);
+              if (name) sessionStorage.setItem("scrabble.nickname", name);
               setOnline({ kind: "join" });
             }}
           >
@@ -647,10 +647,10 @@ function App() {
   const rack = current?.rack ?? [];
   return (
     <main className="game">
-      <h1 className="sr-only">Squabble game board</h1>
+      <h1 className="sr-only">Scrabble game board</h1>
       <header>
         <div className="brand small">
-          <span>S</span>Squabble
+          <span>S</span>Scrabble
         </div>
         <div className="scores">
           {game.players.map((player, i) => (
@@ -1037,7 +1037,7 @@ function Header({ back }: { back: () => void }) {
     <header className="top">
       <button onClick={back}>← Back</button>
       <div className="brand small">
-        <span>S</span>Squabble
+        <span>S</span>Scrabble
       </div>
     </header>
   );

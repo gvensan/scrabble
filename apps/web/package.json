@@ -1,5 +1,5 @@
 {
-  "name": "@squabble/web",
+  "name": "@scrabble/web",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -10,7 +10,7 @@
     "typecheck": "tsc -p tsconfig.app.json --noEmit"
   },
   "dependencies": {
-    "@squabble/game-engine": "*",
+    "@scrabble/game-engine": "*",
     "@tailwindcss/vite": "4.3.3",
     "@vitejs/plugin-react": "5.1.4",
     "react": "19.3.1",

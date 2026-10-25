@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import { passTurn } from "@squabble/game-engine";
+import { passTurn } from "@scrabble/game-engine";
 import {
   CLOSE_ROOM_GONE,
   CLOSE_SEAT_REJECTED,
@@ -9,7 +9,7 @@ import {
   SOCKET_PROTOCOL,
   SOCKET_TOKEN_PREFIX,
   type RoomStatus,
-} from "@squabble/game-engine/protocol";
+} from "@scrabble/game-engine/protocol";
 import {
   addMember,
   applyAction,
@@ -44,7 +44,7 @@ import type {
   AdminLeader,
   AdminOverview,
   AdminPlayer,
-} from "@squabble/game-engine/protocol";
+} from "@scrabble/game-engine/protocol";
 interface Env {
   ROOM_DIRECTORY: DurableObjectNamespace<RoomDirectory>;
   ROOMS: DurableObjectNamespace<Room>;

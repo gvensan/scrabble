@@ -3,12 +3,12 @@ Below is the recommended setup for gvensan/scrabble. Do not paste the Cloudflare
 ## 1. Create or open your Cloudflare account
 
 1. Sign in at dash.cloudflare.com.
-2. Select the account that should own Squabble.
+2. Select the account that should own Scrabble.
 3. Open Workers & Pages.
 4. If prompted, activate the Workers Free plan.
 5. Ensure a workers.dev subdomain is configured. Cloudflare assigns Workers URLs in the form:
 
-https://squabble-worker.YOUR-SUBDOMAIN.workers.dev
+https://scrabble-worker.YOUR-SUBDOMAIN.workers.dev
 
 Cloudflare documents the workers.dev setup and naming behavior here.
 
@@ -26,7 +26,7 @@ The account ID is not as sensitive as an API token, but this project stores it a
 
 ## 3. Create a bootstrap API token
 
-Because squabble-worker does not exist yet, the first deployment needs permission to create it.
+Because scrabble-worker does not exist yet, the first deployment needs permission to create it.
 
 1. In Cloudflare, open your profile menu.
 2. Select My Profile → API Tokens. You can also search the dashboard for API Tokens.
@@ -34,7 +34,7 @@ Because squabble-worker does not exist yet, the first deployment needs permissio
 4. Choose Create Custom Token.
 5. Name it something like:
 
-squabble-github-bootstrap
+scrabble-github-bootstrap
 
 6. Configure the permission using the current granular interface:
 
@@ -47,7 +47,7 @@ If your account still shows the legacy permission interface, use:
 Account → Workers Scripts → Edit
 Account resources → Include → your Cloudflare account
 
-7. Do not add zone permissions. Squabble initially uses workers.dev, not a custom domain.
+7. Do not add zone permissions. Scrabble initially uses workers.dev, not a custom domain.
 8. Do not add an IP-address restriction because GitHub-hosted runners use changing addresses.
 9. Create the token.
 10. Copy the token immediately; Cloudflare displays it only once.
@@ -106,7 +106,7 @@ Then:
 The workflow will:
 
 - Run the complete test/build gate.
-- Create squabble-worker.
+- Create scrabble-worker.
 - Create its two SQLite-backed Durable Object namespaces.
 - Install RATE_LIMIT_SALT and ADMIN_TOKEN as encrypted Worker secrets.
 - Configure the GitHub Pages origin.
@@ -118,11 +118,11 @@ Cloudflare’s official Wrangler GitHub Action supports passing both CI credenti
 
 The workflow output or Cloudflare dashboard should show something similar to:
 
-https://squabble-worker.example-subdomain.workers.dev
+https://scrabble-worker.example-subdomain.workers.dev
 
 Open its health endpoint:
 
-https://squabble-worker.example-subdomain.workers.dev/health
+https://scrabble-worker.example-subdomain.workers.dev/health
 
 Expected response:
 
@@ -139,10 +139,10 @@ github.com/gvensan/scrabble/settings/variables/actions
 Add these repository variables, substituting your real Worker hostname and omitting any trailing slash:
 
 VITE_API_BASE_URL
-https://squabble-worker.YOUR-SUBDOMAIN.workers.dev
+https://scrabble-worker.YOUR-SUBDOMAIN.workers.dev
 
 VITE_WS_BASE_URL
-wss://squabble-worker.YOUR-SUBDOMAIN.workers.dev
+wss://scrabble-worker.YOUR-SUBDOMAIN.workers.dev
 
 Important:
 
@@ -214,23 +214,23 @@ GitHub’s current Pages workflow uses configure-pages, upload-pages-artifact, a
 
 ## 12. Replace the bootstrap token with a narrower token
 
-After squabble-worker exists, tighten the CI credential:
+After scrabble-worker exists, tighten the CI credential:
 
 1. Create another Cloudflare custom API token.
 2. Name it:
 
-squabble-github-deploy
+scrabble-github-deploy
 
 3. Grant:
 
-Worker: squabble-worker
+Worker: scrabble-worker
 Role: Editor
 
 In the legacy interface, use Workers Scripts → Edit, narrowed as much as the interface permits.
 
 4. Replace the GitHub CLOUDFLARE_API_TOKEN secret with this new token.
 5. Run the Worker workflow once to verify it.
-6. Revoke the original squabble-github-bootstrap token.
+6. Revoke the original scrabble-github-bootstrap token.
 
 Editor access is sufficient for updating an existing Worker and its secrets; Admin was needed only to create the Worker initially.
 
@@ -238,7 +238,7 @@ Editor access is sufficient for updating an existing Worker and its secrets; Adm
 
 For local manual administration, use Node 22 and Cloudflare OAuth:
 
-cd /Users/girivenkatesan/gitmine/squabble
+cd /Users/girivenkatesan/gitmine/scrabble
 nvm install 22
 nvm use 22
 npx wrangler@latest login

@@ -1,5 +1,5 @@
 {
-  "name": "squabble",
+  "name": "scrabble",
   "version": "0.0.0",
   "private": true,
   "description": "A live, room-based word-board game for friends.",
@@ -11,9 +11,9 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspace @squabble/game-engine && npm run build --workspace @squabble/worker && npm run build --workspace @squabble/web",
+    "build": "npm run build --workspace @scrabble/game-engine && npm run build --workspace @scrabble/worker && npm run build --workspace @scrabble/web",
     "check": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run build",
-    "dev": "npm run dev --workspace @squabble/web",
+    "dev": "npm run dev --workspace @scrabble/web",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint .",

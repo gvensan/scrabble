@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { PlayAnalysis } from "@squabble/game-engine";
+import type { PlayAnalysis } from "@scrabble/game-engine";
 import {
   defineWord,
   DICTIONARY_CREDIT,

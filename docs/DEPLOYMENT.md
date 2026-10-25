@@ -1,6 +1,6 @@
 # Deployment
 
-Squabble uses GitHub Pages for the static web client and a Cloudflare Worker with SQLite-backed Durable Objects for rooms. No credential is committed or compiled into the browser.
+Scrabble uses GitHub Pages for the static web client and a Cloudflare Worker with SQLite-backed Durable Objects for rooms. No credential is committed or compiled into the browser.
 
 ## GitHub configuration
 

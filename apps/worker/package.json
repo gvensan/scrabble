@@ -1,10 +1,10 @@
 {
-  "name": "@squabble/worker",
+  "name": "@scrabble/worker",
   "version": "0.0.0",
   "private": true,
   "type": "module",
   "dependencies": {
-    "@squabble/game-engine": "*",
+    "@scrabble/game-engine": "*",
     "zod": "^4.6.7"
   },
   "scripts": {

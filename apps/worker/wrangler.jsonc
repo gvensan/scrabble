@@ -1,5 +1,5 @@
 {
-  "name": "squabble-worker",
+  "name": "scrabble-worker",
   "main": "src/index.ts",
   "compatibility_date": "2026-01-28",
   "durable_objects": {

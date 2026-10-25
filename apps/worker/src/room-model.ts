@@ -7,12 +7,12 @@ import {
   type Placement,
   type RandomSource,
   type WordValidator,
-} from "@squabble/game-engine";
+} from "@scrabble/game-engine";
 import type {
   ClientMessage,
   PublicRoom,
   RoomStatus,
-} from "@squabble/game-engine/protocol";
+} from "@scrabble/game-engine/protocol";
 
 export interface Member {
   id: string;

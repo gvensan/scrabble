@@ -1,6 +1,6 @@
 openapi: 3.1.0
 info:
-  title: Squabble Room API
+  title: Scrabble Room API
   version: 1.0.0
 servers:
   - url: https://YOUR-WORKER.workers.dev
@@ -101,8 +101,8 @@ paths:
       summary: Authenticated WebSocket upgrade
       description: >-
         The seat token is never placed in the URL. The client offers two
-        subprotocols, `squabble.v1` and `token.<seat token>`, in
-        Sec-WebSocket-Protocol; the server selects `squabble.v1`. Because
+        subprotocols, `scrabble.v1` and `token.<seat token>`, in
+        Sec-WebSocket-Protocol; the server selects `scrabble.v1`. Because
         browsers hide HTTP status codes from WebSocket clients, a refused
         connection is upgraded and immediately closed with code 4004 (room
         expired or deleted) or 4401 (seat token unknown, or the player left).
@@ -112,7 +112,7 @@ paths:
         - name: Sec-WebSocket-Protocol
           in: header
           required: true
-          schema: { type: string, example: "squabble.v1, token.SEAT_TOKEN" }
+          schema: { type: string, example: "scrabble.v1, token.SEAT_TOKEN" }
       responses:
         "101":
           description: WebSocket upgraded, or upgraded and closed with 4004/4401

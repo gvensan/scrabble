@@ -2,7 +2,7 @@ import { z } from "zod";
 
 export const PROTOCOL_VERSION = 1;
 /** WebSocket subprotocols: the token travels in a header, never the URL. */
-export const SOCKET_PROTOCOL = "squabble.v1";
+export const SOCKET_PROTOCOL = "scrabble.v1";
 export const SOCKET_TOKEN_PREFIX = "token.";
 /** Close codes the client treats as final rather than retrying. */
 export const CLOSE_ROOM_GONE = 4004;

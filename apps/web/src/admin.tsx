@@ -6,10 +6,10 @@ import type {
   AdminPlayer,
   AdminRoom,
   AdminRoomDetail,
-} from "@squabble/game-engine/protocol";
+} from "@scrabble/game-engine/protocol";
 import { api } from "./config.js";
 
-const TOKEN_KEY = "squabble.admin";
+const TOKEN_KEY = "scrabble.admin";
 const REFRESH_MS = 20_000;
 type Tab = "rooms" | "games" | "activity" | "players";
 
@@ -129,7 +129,7 @@ function csv(games: readonly AdminGame[]) {
     ),
     link = document.createElement("a");
   link.href = URL.createObjectURL(blob);
-  link.download = `squabble-games-${new Date().toISOString().slice(0, 10)}.csv`;
+  link.download = `scrabble-games-${new Date().toISOString().slice(0, 10)}.csv`;
   link.click();
   URL.revokeObjectURL(link.href);
 }
@@ -218,7 +218,7 @@ export function AdminPage() {
             setError("");
           }}
         >
-          <p className="eyebrow">Squabble admin</p>
+          <p className="eyebrow">Scrabble admin</p>
           <h1>Sign in</h1>
           <label className="field">
             <span>Admin token</span>
@@ -253,7 +253,7 @@ export function AdminPage() {
     <main className="admin">
       <header className="admin-head">
         <div>
-          <p className="eyebrow">Squabble admin</p>
+          <p className="eyebrow">Scrabble admin</p>
           <h1>Rooms and games</h1>
           <small aria-live="polite">
             {data

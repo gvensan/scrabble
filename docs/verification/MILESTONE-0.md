@@ -45,5 +45,5 @@ Primary sources:
 ## Remaining release checks
 
 - Reconfirm all quotas, action versions, provider schema, terms, and attribution immediately before their implementation/deployment milestones.
-- Run a legal/brand review of the final Squabble name, visual identity, baseline letter distribution, and premium layout.
+- Run a legal/brand review of the final Scrabble name, visual identity, baseline letter distribution, and premium layout.
 - Confirm the eventual GitHub repository/project slug before fixing Vite's production base path.

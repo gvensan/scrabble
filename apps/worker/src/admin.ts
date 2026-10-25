@@ -6,7 +6,7 @@ import type {
   AdminRoom,
   AdminRoomDetail,
   AdminSeat,
-} from "@squabble/game-engine/protocol";
+} from "@scrabble/game-engine/protocol";
 import { publicRoom, type RoomData } from "./room-model.js";
 
 /** What a Room tells the directory after each change; never tokens or racks. */

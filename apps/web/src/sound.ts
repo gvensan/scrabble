@@ -46,7 +46,7 @@ const patterns: Record<
 
 export function useGameSounds(): GameSounds {
   const [muted, setMuted] = useState(
-    () => localStorage.getItem("squabble.sound-muted") === "true",
+    () => localStorage.getItem("scrabble.sound-muted") === "true",
   );
   const mutedRef = useRef(muted);
   const contextRef = useRef<AudioContext | null>(null);
@@ -95,7 +95,7 @@ export function useGameSounds(): GameSounds {
     setMuted((current) => {
       const next = !current;
       mutedRef.current = next;
-      localStorage.setItem("squabble.sound-muted", String(next));
+      localStorage.setItem("scrabble.sound-muted", String(next));
       if (!next) unlock();
       return next;
     });

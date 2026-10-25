@@ -9,7 +9,7 @@ The product needs deterministic, balanced premium squares on boards from 7×7 to
 
 ## Decision
 
-Use a Squabble-owned `premium-layout-v1` configuration. The 15×15 board will be a checked-in, explicitly reviewed grid produced for this project, not a copied commercial board. Other sizes use a deterministic generator whose output is materialized in tests and may later be promoted to curated preset data.
+Use a Scrabble-owned `premium-layout-v1` configuration. The 15×15 board will be a checked-in, explicitly reviewed grid produced for this project, not a copied commercial board. Other sizes use a deterministic generator whose output is materialized in tests and may later be promoted to curated preset data.
 
 The generator will:
 
