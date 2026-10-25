@@ -17,6 +17,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint .",
+    "qa:layout": "node scripts/qa-layout.mjs",
     "qa:online": "node scripts/qa-online.mjs",
     "test": "vitest run",
     "test:watch": "vitest",

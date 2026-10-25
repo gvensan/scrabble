@@ -124,7 +124,7 @@ try {
   const guestAxe = await new AxeBuilder({ page: guest }).analyze();
   if (hostAxe.violations.length || guestAxe.violations.length)
     throw new Error(
-      `Axe violations: host=${hostAxe.violations.length}, guest=${guestAxe.violations.length}`,
+      `Axe violations: host=${hostAxe.violations.flatMap((item) => item.nodes.map((node) => `${item.id}:${node.target.join(" ")}`)).join(",") || "none"}, guest=${guestAxe.violations.flatMap((item) => item.nodes.map((node) => `${item.id}:${node.target.join(" ")}`)).join(",") || "none"}`,
     );
   const overflow = await guest.evaluate(
     () =>

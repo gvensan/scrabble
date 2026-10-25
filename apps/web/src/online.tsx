@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { shuffle } from "@squabble/game-engine";
+import { getOpeningCells, shuffle } from "@squabble/game-engine";
 import type { PublicRoom, ServerMessage } from "@squabble/game-engine/protocol";
 import { recallLast } from "./draft.js";
+import { fittedCellSize } from "./layout.js";
 import { formatClock, type GameSounds } from "./sound.js";
 
 interface Tile {
@@ -141,7 +142,7 @@ export function OnlineGame({
     [capacity, setCapacity] = useState<2 | 3 | 4>(2),
     [boardSize, setBoardSize] = useState(15),
     [timerSeconds, setTimerSeconds] = useState<0 | 120 | 300>(0),
-    [cellSize, setCellSize] = useState(38),
+    [cellSize, setCellSize] = useState(() => fittedCellSize(15)),
     [now, setNow] = useState(Date.now()),
     [room, setRoom] = useState<PublicRoom | null>(null),
     [seat, setSeat] = useState<Seat | null>(null),
@@ -172,7 +173,19 @@ export function OnlineGame({
     draftMap = useMemo(
       () => new Map(draft.map((item) => [`${item.row}:${item.col}`, item])),
       [draft],
+    ),
+    starts = useMemo(
+      () =>
+        new Set(
+          getOpeningCells(room?.settings.boardSize ?? boardSize).map(
+            (item) => `${item.row}:${item.col}`,
+          ),
+        ),
+      [boardSize, room?.settings.boardSize],
     );
+  useEffect(() => {
+    if (room) setCellSize(fittedCellSize(room.settings.boardSize));
+  }, [room?.settings.boardSize]);
   useEffect(() => {
     stopped.current = false;
     if (invite) {
@@ -743,12 +756,14 @@ export function OnlineGame({
               return (
                 <button
                   key={`${r}:${c}`}
-                  className={`cell ${cell.premium?.toLowerCase() ?? ""} ${pending ? "pending" : ""} ${pending && draftError ? "invalid" : ""}`}
+                  className={`cell ${cell.premium?.toLowerCase() ?? ""} ${starts.has(`${r}:${c}`) ? "start" : ""} ${pending ? "pending" : ""} ${pending && draftError ? "invalid" : ""}`}
                   aria-invalid={pending && draftError ? true : undefined}
                   aria-label={
                     tile
                       ? `${draftError && pending ? "Invalid provisional tile, " : ""}${"blankAs" in tile && tile.blankAs ? tile.blankAs : (tile.letter ?? "blank")}, ${tile.value} points`
-                      : (cell.premium ?? "Empty cell")
+                      : starts.has(`${r}:${c}`)
+                        ? "Start"
+                        : (cell.premium ?? "Empty cell")
                   }
                   onClick={() => selected && place(selected, r, c)}
                   onDragOver={(event) => event.preventDefault()}
@@ -766,6 +781,10 @@ export function OnlineGame({
                       </b>
                       <small>{tile.value}</small>
                     </>
+                  ) : starts.has(`${r}:${c}`) ? (
+                    <span className="start-star" aria-hidden="true">
+                      ★
+                    </span>
                   ) : (
                     cell.premium
                   )}
@@ -846,7 +865,11 @@ export function OnlineGame({
           <button onClick={() => setCellSize(Math.max(30, cellSize - 4))}>
             − Zoom
           </button>
-          <button onClick={() => setCellSize(38)}>Reset</button>
+          <button
+            onClick={() => setCellSize(fittedCellSize(room.settings.boardSize))}
+          >
+            Fit
+          </button>
           <button onClick={() => setCellSize(Math.min(58, cellSize + 4))}>
             + Zoom
           </button>

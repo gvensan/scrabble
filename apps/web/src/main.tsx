@@ -16,6 +16,7 @@ import {
 } from "@squabble/game-engine";
 import "./styles.css";
 import { recallLast } from "./draft.js";
+import { fittedCellSize } from "./layout.js";
 import { OnlineGame } from "./online.js";
 import { formatClock, useGameSounds } from "./sound.js";
 
@@ -62,7 +63,7 @@ function App() {
     [draftError, setDraftError] = useState<string | null>(null),
     [message, setMessage] = useState("Choose a tile, then a board cell."),
     [concealed, setConcealed] = useState(true),
-    [cellSize, setCellSize] = useState(38);
+    [cellSize, setCellSize] = useState(() => fittedCellSize(15));
   const [exchangeMode, setExchangeMode] = useState(false),
     [exchangeIds, setExchangeIds] = useState<string[]>([]),
     [confirm, setConfirm] = useState<"pass" | "exchange" | null>(null),
@@ -90,6 +91,9 @@ function App() {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("squabble.theme", theme);
   }, [theme]);
+  useEffect(() => {
+    if (game) setCellSize(fittedCellSize(game.settings.boardSize));
+  }, [game?.settings.boardSize]);
   useEffect(() => {
     if (game?.phase === "active" && !concealed)
       sounds.play(game.settings.timerSeconds === 0 ? "turn" : "timer-start");
@@ -532,7 +536,13 @@ function App() {
             <button onClick={() => setCellSize(Math.max(26, cellSize - 4))}>
               −
             </button>
-            <button onClick={() => setCellSize(38)}>Fit</button>
+            <button
+              onClick={() =>
+                setCellSize(fittedCellSize(game.settings.boardSize))
+              }
+            >
+              Fit
+            </button>
             <button onClick={() => setCellSize(Math.min(58, cellSize + 4))}>
               +
             </button>
@@ -597,7 +607,7 @@ function App() {
                 return (
                   <button
                     key={`${r}:${c}`}
-                    className={`cell ${cell.premium?.toLowerCase() ?? ""} ${pending ? "pending" : ""} ${pending && draftError ? "invalid" : ""}`}
+                    className={`cell ${cell.premium?.toLowerCase() ?? ""} ${starts.has(`${r}:${c}`) ? "start" : ""} ${pending ? "pending" : ""} ${pending && draftError ? "invalid" : ""}`}
                     aria-invalid={pending && draftError ? true : undefined}
                     style={{ width: cellSize, height: cellSize }}
                     aria-label={
@@ -624,7 +634,9 @@ function App() {
                         <small>{tile.value}</small>
                       </>
                     ) : starts.has(`${r}:${c}`) ? (
-                      "✦"
+                      <span className="start-star" aria-hidden="true">
+                        ★
+                      </span>
                     ) : (
                       cell.premium
                     )}
