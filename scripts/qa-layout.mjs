@@ -54,6 +54,25 @@ async function exercise(viewport, suffix) {
     path: `artifacts/screenshots/19-lobby-${suffix}.png`,
   });
 
+  await page.getByRole("button", { name: "Start game" }).click();
+  await page.getByRole("button", { name: "Reveal my rack" }).click();
+  await page.getByRole("button", { name: "Fit", exact: true }).click();
+  if (suffix === "desktop") {
+    const boardOverflow = await page
+      .locator(".board-scroll")
+      .evaluate(
+        (element) =>
+          element.scrollWidth > element.clientWidth ||
+          element.scrollHeight > element.clientHeight,
+      );
+    if (boardOverflow)
+      throw new Error("Fit left scrollbars on the local desktop board canvas.");
+  }
+  await assertViewportLocked(page, "local game", suffix);
+  await page.screenshot({
+    path: `artifacts/screenshots/21-local-game-${suffix}.png`,
+  });
+
   await page.goto(base);
   await page.getByRole("button", { name: "Play online with friends" }).click();
   await page.getByRole("button", { name: "Create online room" }).click();
@@ -69,7 +88,13 @@ try {
   await exercise({ width: 375, height: 812 }, "phone");
   console.log(
     JSON.stringify({
-      screens: ["welcome", "settings", "local lobby", "online setup"],
+      screens: [
+        "welcome",
+        "settings",
+        "local lobby",
+        "local game",
+        "online setup",
+      ],
       viewports: ["desktop", "phone"],
       documentOverflow: false,
     }),

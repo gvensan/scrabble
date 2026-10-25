@@ -1,4 +1,12 @@
-import { StrictMode, useEffect, useMemo, useState } from "react";
+import {
+  StrictMode,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { createRoot } from "react-dom/client";
 import {
   BOARD_SIZE,
@@ -73,6 +81,7 @@ function App() {
       tileId: string;
     } | null>(null),
     [secondsLeft, setSecondsLeft] = useState<number | null>(null);
+  const boardViewport = useRef<HTMLDivElement>(null);
   const current = game?.players[game.currentPlayerIndex],
     draftCells = useMemo(
       () => new Map(draft.map((item) => [`${item.row}:${item.col}`, item])),
@@ -91,9 +100,20 @@ function App() {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("squabble.theme", theme);
   }, [theme]);
-  useEffect(() => {
-    if (game) setCellSize(fittedCellSize(game.settings.boardSize));
+  const fitBoard = useCallback(() => {
+    if (game)
+      setCellSize(
+        fittedCellSize(game.settings.boardSize, boardViewport.current),
+      );
   }, [game?.settings.boardSize]);
+  useLayoutEffect(() => {
+    if (!game || !boardViewport.current) return;
+    const viewport = boardViewport.current;
+    fitBoard();
+    const observer = new ResizeObserver(fitBoard);
+    observer.observe(viewport);
+    return () => observer.disconnect();
+  }, [fitBoard, game]);
   useEffect(() => {
     if (game?.phase === "active" && !concealed)
       sounds.play(game.settings.timerSeconds === 0 ? "turn" : "timer-start");
@@ -536,19 +556,13 @@ function App() {
             <button onClick={() => setCellSize(Math.max(26, cellSize - 4))}>
               −
             </button>
-            <button
-              onClick={() =>
-                setCellSize(fittedCellSize(game.settings.boardSize))
-              }
-            >
-              Fit
-            </button>
+            <button onClick={fitBoard}>Fit</button>
             <button onClick={() => setCellSize(Math.min(58, cellSize + 4))}>
               +
             </button>
           </div>
         </div>
-        <div className="board-scroll">
+        <div className="board-scroll" ref={boardViewport}>
           {draftError && draft.length > 0 && (
             <div className="board-error" role="alert">
               <button

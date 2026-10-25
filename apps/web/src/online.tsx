@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { getOpeningCells, shuffle } from "@squabble/game-engine";
 import type { PublicRoom, ServerMessage } from "@squabble/game-engine/protocol";
 import { recallLast } from "./draft.js";
@@ -169,6 +176,7 @@ export function OnlineGame({
     warnedDeadline = useRef<number | null>(null),
     endedDeadline = useRef<number | null>(null),
     revision = useRef(-1),
+    boardViewport = useRef<HTMLDivElement>(null),
     me = room?.players.find((player) => player.id === seat?.playerId),
     draftMap = useMemo(
       () => new Map(draft.map((item) => [`${item.row}:${item.col}`, item])),
@@ -183,9 +191,20 @@ export function OnlineGame({
         ),
       [boardSize, room?.settings.boardSize],
     );
-  useEffect(() => {
-    if (room) setCellSize(fittedCellSize(room.settings.boardSize));
+  const fitBoard = useCallback(() => {
+    if (room)
+      setCellSize(
+        fittedCellSize(room.settings.boardSize, boardViewport.current),
+      );
   }, [room?.settings.boardSize]);
+  useLayoutEffect(() => {
+    if (!room || !boardViewport.current) return;
+    const viewport = boardViewport.current;
+    fitBoard();
+    const observer = new ResizeObserver(fitBoard);
+    observer.observe(viewport);
+    return () => observer.disconnect();
+  }, [fitBoard, room]);
   useEffect(() => {
     stopped.current = false;
     if (invite) {
@@ -691,7 +710,7 @@ export function OnlineGame({
         </div>
         <button onClick={exitRoom}>Exit</button>
       </header>
-      <div className="online-board-scroll">
+      <div className="online-board-scroll" ref={boardViewport}>
         {draftError && draft.length > 0 && (
           <div className="board-error" role="alert">
             <button
@@ -865,11 +884,7 @@ export function OnlineGame({
           <button onClick={() => setCellSize(Math.max(30, cellSize - 4))}>
             − Zoom
           </button>
-          <button
-            onClick={() => setCellSize(fittedCellSize(room.settings.boardSize))}
-          >
-            Fit
-          </button>
+          <button onClick={fitBoard}>Fit</button>
           <button onClick={() => setCellSize(Math.min(58, cellSize + 4))}>
             + Zoom
           </button>

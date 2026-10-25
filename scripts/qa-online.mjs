@@ -50,6 +50,16 @@ try {
   if ((await guest.locator(".rack button").count()) !== 7)
     throw new Error("Guest rack is not private and complete.");
   await host.locator("aside .timer-card").waitFor();
+  await host.getByRole("button", { name: "Fit", exact: true }).click();
+  const boardOverflow = await host
+    .locator(".online-board-scroll")
+    .evaluate(
+      (element) =>
+        element.scrollWidth > element.clientWidth ||
+        element.scrollHeight > element.clientHeight,
+    );
+  if (boardOverflow)
+    throw new Error("Fit left scrollbars on the desktop board canvas.");
 
   const center = host.locator(".cell").nth(10 * 21 + 10);
   await host.locator(".rack button").first().dragTo(center);
