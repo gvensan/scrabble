@@ -1,0 +1,70 @@
+openapi: 3.1.0
+info:
+  title: Squabble Room API
+  version: 1.0.0
+servers:
+  - url: https://YOUR-WORKER.workers.dev
+paths:
+  /health:
+    get:
+      responses:
+        "200": { description: Worker health }
+  /api/rooms:
+    post:
+      summary: Create a private temporary room
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [nickname, settings]
+              properties:
+                nickname: { type: string, minLength: 1, maxLength: 20 }
+                settings:
+                  $ref: "#/components/schemas/RoomSettings"
+      responses:
+        "201": { description: Room, player ID, and private reconnect token }
+        "400": { description: Invalid input }
+        "429": { description: Creation rate limited }
+  /api/rooms/{code}/join:
+    post:
+      summary: Join an unstarted room
+      parameters:
+        - { name: code, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [nickname]
+              properties:
+                nickname: { type: string, minLength: 1, maxLength: 20 }
+      responses:
+        "201": { description: Player ID and private reconnect token }
+        "404": { description: Room not found or expired }
+        "409": { description: Room full, started, or nickname collision }
+        "429": { description: Admission rate limited }
+  /ws:
+    get:
+      summary: Authenticated WebSocket upgrade
+      parameters:
+        - { name: room, in: query, required: true, schema: { type: string } }
+        - { name: token, in: query, required: true, schema: { type: string } }
+      responses:
+        "101": { description: WebSocket upgraded }
+        "401": { description: Invalid seat token }
+components:
+  schemas:
+    RoomSettings:
+      type: object
+      required: [boardSize, capacity, timerSeconds]
+      properties:
+        boardSize: { type: integer, minimum: 7, maximum: 40 }
+        capacity: { type: integer, enum: [2, 3, 4] }
+        timerSeconds: { type: integer, enum: [0, 120, 300] }
+# WebSocket messages use protocolVersion 1. Runtime Zod schemas in
+# packages/game-engine/src/protocol.ts are authoritative. Every mutating client
+# action carries a UUID actionId and expected revision. Public snapshots omit
+# bag contents, tokens, and all racks; seat.private is sent only to its token.

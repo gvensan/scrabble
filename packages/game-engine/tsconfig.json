@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "rootDir": "src",
+    "tsBuildInfoFile": "../../node_modules/.cache/game-engine.tsbuildinfo"
+  },
+  "include": ["src/**/*.ts"]
+}

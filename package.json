@@ -1,0 +1,38 @@
+{
+  "name": "squabble",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A live, room-based word-board game for friends.",
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace @squabble/game-engine && npm run build --workspace @squabble/worker && npm run build --workspace @squabble/web",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run build",
+    "dev": "npm run dev --workspace @squabble/web",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint .",
+    "qa:online": "node scripts/qa-online.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.10.2",
+    "@eslint/js": "10.0.1",
+    "@types/node": "24.10.0",
+    "eslint": "10.0.1",
+    "globals": "16.5.0",
+    "playwright-core": "^1.64.1",
+    "prettier": "3.6.2",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.72.0",
+    "vite": "7.3.7",
+    "vitest": "4.1.12"
+  }
+}
