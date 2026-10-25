@@ -38,6 +38,11 @@ export interface Cell {
   readonly premium: Premium;
   readonly tile: PlacedTile | null;
 }
+export type BoardTile = Pick<PlacedTile, "letter" | "value" | "blankAs">;
+export interface BoardCell {
+  readonly premium: Premium;
+  readonly tile: BoardTile | null;
+}
 export interface Placement {
   readonly tileId: string;
   readonly row: number;
@@ -65,11 +70,29 @@ export interface GameState {
   readonly scorelessTurns: number;
   readonly turnNumber: number;
   readonly endReason: "rack-emptied" | "six-scoreless-turns" | null;
+  readonly lastMove?: LastMove;
+  /** Every finished turn in order; absent in games saved before it existed. */
+  readonly history?: readonly LastMove[];
+}
+export interface LastMove {
+  readonly playerIndex: number;
+  readonly kind: "play" | "pass" | "exchange" | "auto-pass";
+  readonly words: readonly WordScore[];
+  readonly score: number;
+  readonly tiles: number;
 }
 export interface WordScore {
   readonly word: string;
   readonly score: number;
 }
+export type PlayAnalysis =
+  | {
+      readonly ok: true;
+      readonly words: readonly WordScore[];
+      readonly score: number;
+      readonly candidates: readonly string[];
+    }
+  | { readonly ok: false; readonly error: string };
 export type MoveResult =
   | {
       readonly ok: true;

@@ -2,6 +2,7 @@ node_modules/
 dist/
 coverage/
 .wrangler/
+.dev/
 
 # Local configuration and credentials. Commit only the documented template.
 .env

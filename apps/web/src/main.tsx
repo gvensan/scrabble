@@ -9,6 +9,7 @@ import {
 } from "react";
 import { createRoot } from "react-dom/client";
 import {
+  analyzePlay,
   BOARD_SIZE,
   createGame,
   exchangeTiles,
@@ -23,9 +24,18 @@ import {
   type RandomSource,
 } from "@squabble/game-engine";
 import "./styles.css";
+import {
+  MAX_CELL,
+  MIN_CELL,
+  useBoardKeys,
+  usePinchZoom,
+} from "./board-input.js";
+import { AdminPage } from "./admin.js";
+import { checkWords, DictionaryError } from "./dictionary.js";
 import { recallLast } from "./draft.js";
 import { fittedCellSize } from "./layout.js";
-import { OnlineGame } from "./online.js";
+import { OnlineGame, type RoomSettings } from "./online.js";
+import { LastPlay, RulesDialog, ScorePreview } from "./panels.js";
 import { formatClock, useGameSounds } from "./sound.js";
 
 type Screen = "welcome" | "settings" | "lobby" | "game";
@@ -37,8 +47,6 @@ const random: RandomSource = {
     return (data[0] ?? 0) % max;
   },
 };
-const demoValidator = (words: readonly string[]) =>
-  new Map(words.map((word) => [word, /^[A-Z]{2,40}$/.test(word)]));
 const premiumName = {
   TW: "Triple word",
   DW: "Double word",
@@ -48,9 +56,13 @@ const premiumName = {
 
 function App() {
   const sounds = useGameSounds();
-  const [online, setOnline] = useState(() =>
-    new URLSearchParams(location.search).has("room"),
+  // null: local screens; otherwise the online flow, joining or creating.
+  const [online, setOnline] = useState<
+    { kind: "join" } | { kind: "create"; settings: RoomSettings } | null
+  >(() =>
+    new URLSearchParams(location.search).has("room") ? { kind: "join" } : null,
   );
+  const [where, setWhere] = useState<"online" | "device">("online");
   const [screen, setScreen] = useState<Screen>("welcome"),
     [nickname, setNickname] = useState(
       () => sessionStorage.getItem("squabble.nickname") ?? "",
@@ -60,6 +72,7 @@ function App() {
       timerSeconds: 0,
     }),
     [capacity, setCapacity] = useState<2 | 3 | 4>(2),
+    [checking, setChecking] = useState(false),
     [names, setNames] = useState(["", "Player 2"]),
     [ready, setReady] = useState([true, true]);
   const [theme, setTheme] = useState<Theme>(
@@ -75,13 +88,16 @@ function App() {
   const [exchangeMode, setExchangeMode] = useState(false),
     [exchangeIds, setExchangeIds] = useState<string[]>([]),
     [confirm, setConfirm] = useState<"pass" | "exchange" | null>(null),
+    [showRules, setShowRules] = useState(false),
     [blankTarget, setBlankTarget] = useState<{
       row: number;
       col: number;
       tileId: string;
     } | null>(null),
     [secondsLeft, setSecondsLeft] = useState<number | null>(null);
-  const boardViewport = useRef<HTMLDivElement>(null);
+  const boardViewport = useRef<HTMLDivElement>(null),
+    latestGame = useRef<GameState | null>(null);
+  latestGame.current = game;
   const current = game?.players[game.currentPlayerIndex],
     draftCells = useMemo(
       () => new Map(draft.map((item) => [`${item.row}:${item.col}`, item])),
@@ -95,7 +111,30 @@ function App() {
           ),
         ),
       [game?.settings.boardSize],
-    );
+    ),
+    preview = useMemo(() => {
+      if (!game || draft.length === 0) return null;
+      const rack = game.players[game.currentPlayerIndex]?.rack ?? [];
+      return analyzePlay(
+        game.board,
+        draft.flatMap((item) => {
+          const tile = rack.find((entry) => entry.id === item.tileId);
+          return tile
+            ? [
+                {
+                  row: item.row,
+                  col: item.col,
+                  tile: item.blankAs
+                    ? { ...tile, blankAs: item.blankAs }
+                    : tile,
+                },
+              ]
+            : [];
+        }),
+      );
+    }, [draft, game]),
+    keys = useBoardKeys(game?.settings.boardSize ?? 15);
+  usePinchZoom(boardViewport, cellSize, setCellSize, game?.phase === "active");
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("squabble.theme", theme);
@@ -148,14 +187,14 @@ function App() {
         }
         setGame((state) =>
           state?.phase === "active" && state.turnNumber === turnNumber
-            ? passTurn(state)
+            ? passTurn(state, "auto-pass")
             : state,
         );
         setDraft([]);
         setDraftError(null);
         setSelected(null);
         setConcealed(true);
-        setMessage("Time expired — the turn was passed.");
+        setMessage("Time expired, so the turn was passed.");
       }
     };
     tick();
@@ -204,7 +243,7 @@ function App() {
     )
       return;
     const tile = current?.rack.find((item) => item.id === tileId);
-    if (!tile) return;
+    if (!tile || draft.some((item) => item.tileId === tileId)) return;
     if (tile.letter === null) {
       setBlankTarget({ row, col, tileId: tile.id });
       return;
@@ -212,10 +251,19 @@ function App() {
     setDraft([...draft, { tileId: tile.id, row, col }]);
     setDraftError(null);
     setSelected(null);
-    setMessage("Draft updated — add tiles or play the word.");
+    setMessage("Draft updated. Add tiles or play the word.");
   };
   const place = (row: number, col: number) => {
-    if (selected) placeTile(selected, row, col);
+    keys.setCursor({ row, col });
+    if (selected) {
+      placeTile(selected, row, col);
+      return;
+    }
+    if (draftCells.has(`${row}:${col}`)) {
+      setDraft(draft.filter((item) => item.row !== row || item.col !== col));
+      setDraftError(null);
+      setMessage("Tile returned to your rack.");
+    }
   };
   const assignBlank = (blankAs: Letter) => {
     if (!blankTarget) return;
@@ -224,19 +272,39 @@ function App() {
     setBlankTarget(null);
     setSelected(null);
   };
-  const submit = () => {
-    if (!game) return;
-    const result = playMove(game, draft, demoValidator);
-    if (!result.ok) {
-      setMessage(result.error);
-      setDraftError(result.error);
-      sounds.play("error");
-      return;
+  const reject = (error: string) => {
+    setMessage(error);
+    setDraftError(error);
+    sounds.play("error");
+  };
+  const submit = async () => {
+    if (!game || checking) return;
+    const analysis = preview ?? analyzePlay(game.board, []);
+    if (!analysis.ok) return reject(analysis.error);
+    let validity: ReadonlyMap<string, boolean>;
+    setChecking(true);
+    setMessage("Checking every word…");
+    try {
+      validity = await checkWords(analysis.candidates);
+    } catch (error) {
+      return reject(
+        error instanceof DictionaryError
+          ? `${error.message} Keep your tiles in place and try again.`
+          : "The dictionary could not be reached. Try again.",
+      );
+    } finally {
+      setChecking(false);
     }
-    next(
-      result.state,
-      `${result.words.map((item) => item.word).join(", ")} scored ${result.score} points.`,
+    // The turn timer may have passed the turn while the check was running.
+    if (latestGame.current !== game) return;
+    const result = playMove(
+      game,
+      draft,
+      (words) =>
+        new Map(words.map((word) => [word, validity.get(word) === true])),
     );
+    if (!result.ok) return reject(result.error);
+    next(result.state, "Pass the device to the next player.");
   };
   const doExchange = () => {
     if (!game) return;
@@ -256,7 +324,8 @@ function App() {
     return (
       <OnlineGame
         nickname={nickname}
-        onExit={() => setOnline(false)}
+        {...(online.kind === "create" ? { create: online.settings } : {})}
+        onExit={() => setOnline(null)}
         theme={theme}
         onThemeChange={setTheme}
         sounds={sounds}
@@ -276,8 +345,8 @@ function App() {
             <em>Make your move.</em>
           </h1>
           <p className="lede">
-            A warm word-board game for two to four people. No accounts—just pass
-            the device and play.
+            A warm word-board game for two to four people. No accounts, just
+            pass the device and play.
           </p>
           <label className="field">
             Your nickname
@@ -297,13 +366,20 @@ function App() {
             disabled={!nickname.trim()}
             onClick={continueWelcome}
           >
-            Create a local game →
+            Create a game →
           </button>
-          <button className="secondary wide" onClick={() => setOnline(true)}>
-            Play online with friends
+          <button
+            className="secondary wide"
+            onClick={() => {
+              const name = nickname.trim().slice(0, 20);
+              if (name) sessionStorage.setItem("squabble.nickname", name);
+              setOnline({ kind: "join" });
+            }}
+          >
+            Join with a code
           </button>
           <small>
-            Local pass-and-play preview · Nothing leaves this device
+            Invite friends with a link, or pass one device around the table.
           </small>
         </section>
       </main>
@@ -315,6 +391,31 @@ function App() {
         <section className="card">
           <p className="eyebrow">Set the table</p>
           <h1>Create your game</h1>
+          <fieldset>
+            <legend>Where are you playing?</legend>
+            <div className="choices two">
+              <button
+                className={where === "online" ? "active" : ""}
+                aria-pressed={where === "online"}
+                onClick={() => setWhere("online")}
+              >
+                <b>Invite friends online</b>
+                <small>
+                  Everyone uses their own device. You get a link to share.
+                </small>
+              </button>
+              <button
+                className={where === "device" ? "active" : ""}
+                aria-pressed={where === "device"}
+                onClick={() => setWhere("device")}
+              >
+                <b>Same device</b>
+                <small>
+                  Pass one phone, tablet or computer around the table.
+                </small>
+              </button>
+            </div>
+          </fieldset>
           <fieldset>
             <legend>Board size</legend>
             <div className="choices">
@@ -336,84 +437,98 @@ function App() {
                   </small>
                 </button>
               ))}
+              <label className="field compact">
+                Custom (7–40)
+                <input
+                  type="number"
+                  min={BOARD_SIZE.min}
+                  max={BOARD_SIZE.max}
+                  value={settings.boardSize}
+                  onChange={(e) =>
+                    setSettings({
+                      ...settings,
+                      boardSize: Math.min(
+                        40,
+                        Math.max(7, Number(e.target.value)),
+                      ),
+                    })
+                  }
+                />
+              </label>
             </div>
-            <label className="field compact">
-              Custom (7–40)
-              <input
-                type="number"
-                min={BOARD_SIZE.min}
-                max={BOARD_SIZE.max}
-                value={settings.boardSize}
-                onChange={(e) =>
-                  setSettings({
-                    ...settings,
-                    boardSize: Math.min(
-                      40,
-                      Math.max(7, Number(e.target.value)),
-                    ),
-                  })
-                }
-              />
-            </label>
             {(settings.boardSize < 11 || settings.boardSize > 21) && (
               <p className="notice">
                 This creates an unusual, experimental game.
               </p>
             )}
           </fieldset>
-          <fieldset>
-            <legend>Board theme</legend>
-            <div className="segments themes">
-              {(["garden", "candy", "midnight"] as const).map((value) => (
-                <button
-                  key={value}
-                  className={theme === value ? "active" : ""}
-                  onClick={() => setTheme(value)}
-                >
-                  {value[0]?.toUpperCase()}
-                  {value.slice(1)}
-                </button>
-              ))}
-            </div>
-          </fieldset>
-          <fieldset>
-            <legend>Players</legend>
-            <div className="segments">
-              {([2, 3, 4] as const).map((value) => (
-                <button
-                  key={value}
-                  className={capacity === value ? "active" : ""}
-                  onClick={() => changeCapacity(value)}
-                >
-                  {value}
-                </button>
-              ))}
-            </div>
-          </fieldset>
-          <fieldset>
-            <legend>Turn timer</legend>
-            <div className="segments">
-              {(
-                [
-                  { v: 0, l: "Off" },
-                  { v: 120, l: "2 min" },
-                  { v: 300, l: "5 min" },
-                ] as const
-              ).map((item) => (
-                <button
-                  key={item.v}
-                  className={settings.timerSeconds === item.v ? "active" : ""}
-                  onClick={() =>
-                    setSettings({ ...settings, timerSeconds: item.v })
-                  }
-                >
-                  {item.l}
-                </button>
-              ))}
-            </div>
-          </fieldset>
-          <button className="primary wide" onClick={() => setScreen("lobby")}>
-            Continue to lobby →
+          <div className="settings-grid three">
+            <fieldset className="span-phone">
+              <legend>Board theme</legend>
+              <div className="segments themes">
+                {(["garden", "candy", "midnight"] as const).map((value) => (
+                  <button
+                    key={value}
+                    className={theme === value ? "active" : ""}
+                    onClick={() => setTheme(value)}
+                  >
+                    {value[0]?.toUpperCase()}
+                    {value.slice(1)}
+                  </button>
+                ))}
+              </div>
+            </fieldset>
+            <fieldset>
+              <legend>Players</legend>
+              <div className="segments">
+                {([2, 3, 4] as const).map((value) => (
+                  <button
+                    key={value}
+                    className={capacity === value ? "active" : ""}
+                    onClick={() => changeCapacity(value)}
+                  >
+                    {value}
+                  </button>
+                ))}
+              </div>
+            </fieldset>
+            <fieldset>
+              <legend>Turn timer</legend>
+              <div className="segments">
+                {(
+                  [
+                    { v: 0, l: "Off" },
+                    { v: 120, l: "2 min" },
+                    { v: 300, l: "5 min" },
+                  ] as const
+                ).map((item) => (
+                  <button
+                    key={item.v}
+                    className={settings.timerSeconds === item.v ? "active" : ""}
+                    onClick={() =>
+                      setSettings({ ...settings, timerSeconds: item.v })
+                    }
+                  >
+                    {item.l}
+                  </button>
+                ))}
+              </div>
+            </fieldset>
+          </div>
+          <button
+            className="primary wide"
+            onClick={() =>
+              where === "online"
+                ? setOnline({
+                    kind: "create",
+                    settings: { ...settings, capacity },
+                  })
+                : setScreen("lobby")
+            }
+          >
+            {where === "online"
+              ? "Create invite link →"
+              : "Continue to lobby →"}
           </button>
         </section>
       </main>
@@ -466,7 +581,7 @@ function App() {
                 ? `${settings.timerSeconds / 60} min turns`
                 : "No timer"}
             </span>
-            <span>Demo dictionary</span>
+            <span>WordSoHard words</span>
           </div>
           <button
             className="primary wide"
@@ -492,6 +607,10 @@ function App() {
             {game.endReason === "rack-emptied"
               ? "A rack and the bag ran empty."
               : "Six scoreless turns ended the game."}
+          </p>
+          <p>
+            {game.lastMove &&
+              `Last move: ${game.players[game.lastMove.playerIndex]?.name ?? "A player"} ${game.lastMove.kind === "play" ? `played ${game.lastMove.words.map((item) => item.word).join(", ")} for ${game.lastMove.score}` : game.lastMove.kind === "exchange" ? "exchanged tiles" : "passed"}.`}
           </p>
           <div className="standings">
             {rank.map((player, i) => (
@@ -548,16 +667,30 @@ function App() {
           <small>Bag</small>
           <b>{game.bag.length}</b>
         </div>
+        <button
+          className="help-button"
+          aria-label="Rules and dictionary"
+          title="Rules and dictionary"
+          onClick={() => setShowRules(true)}
+        >
+          ?
+        </button>
       </header>
       <section className="play">
         <div className="toolbar">
           <b>● {current?.name}'s turn</b>
           <div>
-            <button onClick={() => setCellSize(Math.max(26, cellSize - 4))}>
+            <button
+              aria-label="Zoom out"
+              onClick={() => setCellSize(Math.max(MIN_CELL, cellSize - 4))}
+            >
               −
             </button>
             <button onClick={fitBoard}>Fit</button>
-            <button onClick={() => setCellSize(Math.min(58, cellSize + 4))}>
+            <button
+              aria-label="Zoom in"
+              onClick={() => setCellSize(Math.min(MAX_CELL, cellSize + 4))}
+            >
               +
             </button>
           </div>
@@ -579,6 +712,14 @@ function App() {
               </div>
               <div className="board-error-actions">
                 <button
+                  hidden={
+                    !/dictionary|unavailable|busy|reached/i.test(draftError)
+                  }
+                  onClick={() => void submit()}
+                >
+                  Try again
+                </button>
+                <button
                   onClick={() => {
                     setDraft((placements) => recallLast(placements));
                     setDraftError(null);
@@ -592,7 +733,7 @@ function App() {
                     setDraft([]);
                     setSelected(null);
                     setDraftError(null);
-                    setMessage("Move reset — all tiles returned to your rack.");
+                    setMessage("Move reset. All tiles returned to your rack.");
                   }}
                 >
                   Reset move
@@ -602,10 +743,12 @@ function App() {
           )}
           <div
             className="board"
+            role="group"
+            onKeyDown={keys.onKeyDown}
             style={{
               gridTemplateColumns: `repeat(${game.settings.boardSize},${cellSize}px)`,
             }}
-            aria-label={`${game.settings.boardSize} square board`}
+            aria-label={`${game.settings.boardSize} by ${game.settings.boardSize} board. Use arrow keys to move between squares.`}
           >
             {game.board.flatMap((row, r) =>
               row.map((cell, c) => {
@@ -623,16 +766,20 @@ function App() {
                     key={`${r}:${c}`}
                     className={`cell ${cell.premium?.toLowerCase() ?? ""} ${starts.has(`${r}:${c}`) ? "start" : ""} ${pending ? "pending" : ""} ${pending && draftError ? "invalid" : ""}`}
                     aria-invalid={pending && draftError ? true : undefined}
+                    aria-disabled={cell.tile !== null || undefined}
+                    data-row={r}
+                    data-col={c}
+                    tabIndex={keys.tabIndexFor(r, c)}
                     style={{ width: cellSize, height: cellSize }}
-                    aria-label={
+                    aria-label={`Row ${r + 1}, column ${c + 1}: ${
                       tile
-                        ? `${draftError && pending ? "Invalid provisional tile, " : ""}${letter}, ${tile.value} points`
+                        ? `${draftError && pending ? "invalid provisional tile " : pending ? "your provisional tile " : ""}${letter}, ${tile.value} points`
                         : cell.premium
                           ? premiumName[cell.premium]
                           : starts.has(`${r}:${c}`)
-                            ? "Start"
-                            : "Empty"
-                    }
+                            ? "start square"
+                            : "empty"
+                    }`}
                     onClick={() => place(r, c)}
                     onDragOver={(event) => event.preventDefault()}
                     onDrop={(event) => {
@@ -640,7 +787,6 @@ function App() {
                       const tileId = event.dataTransfer.getData("text/tile-id");
                       if (tileId) placeTile(tileId, r, c);
                     }}
-                    disabled={cell.tile !== null}
                   >
                     {tile ? (
                       <>
@@ -688,12 +834,37 @@ function App() {
                 : `${current?.name}'s time remaining`}
           </small>
         </div>
-        <div className="validator">
-          <b>Demo validator</b>
-          <small>
-            Accepts any A–Z word locally. Words are not provider-verified.
-          </small>
-        </div>
+        <section className="match-status" aria-label="Scores and turn">
+          <header>
+            <span>Scoreboard</span>
+            <b>Turn {game.turnNumber}</b>
+          </header>
+          <div className="score-list">
+            {game.players.map((player, index) => (
+              <div
+                className={
+                  index === game.currentPlayerIndex ? "active" : undefined
+                }
+                key={player.id}
+              >
+                <span aria-hidden="true">
+                  {player.name.charAt(0).toUpperCase()}
+                </span>
+                <b>{player.name}</b>
+                <strong>{player.score}</strong>
+                <small>pts</small>
+              </div>
+            ))}
+          </div>
+        </section>
+        <LastPlay
+          name={
+            game.lastMove
+              ? (game.players[game.lastMove.playerIndex]?.name ?? null)
+              : null
+          }
+          move={game.lastMove ?? null}
+        />
         <p className="status" role="status">
           {message}
         </p>
@@ -734,6 +905,7 @@ function App() {
             );
           })}
         </div>
+        <ScorePreview analysis={preview} />
         <div className="actions">
           <button
             className="secondary"
@@ -748,8 +920,12 @@ function App() {
           >
             Recall
           </button>
-          <button className="primary" disabled={!draft.length} onClick={submit}>
-            Play word
+          <button
+            className="primary"
+            disabled={!draft.length || checking}
+            onClick={() => void submit()}
+          >
+            {checking ? "Checking…" : "Play word"}
           </button>
         </div>
         <div className="minor">
@@ -797,7 +973,9 @@ function App() {
             Exchange {exchangeIds.length} selected
           </button>
         )}
+        <small className="side-hint">Words are checked with WordSoHard.</small>
       </aside>
+      {showRules && <RulesDialog onClose={() => setShowRules(false)} />}
       {concealed && (
         <Overlay>
           <p className="eyebrow">Pass the device</p>
@@ -878,8 +1056,18 @@ function Overlay({ children }: { children: React.ReactNode }) {
 }
 const root = document.querySelector<HTMLElement>("#root");
 if (!root) throw new Error("Missing root element");
+/** The admin dashboard lives at #/adminit so it needs no server routing. */
+function Root() {
+  const [hash, setHash] = useState(location.hash);
+  useEffect(() => {
+    const update = () => setHash(location.hash);
+    window.addEventListener("hashchange", update);
+    return () => window.removeEventListener("hashchange", update);
+  }, []);
+  return hash === "#/adminit" ? <AdminPage /> : <App />;
+}
 createRoot(root).render(
   <StrictMode>
-    <App />
+    <Root />
   </StrictMode>,
 );

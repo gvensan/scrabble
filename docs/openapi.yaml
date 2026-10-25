@@ -9,6 +9,40 @@ paths:
     get:
       responses:
         "200": { description: Worker health }
+  /api/admin/overview:
+    get:
+      summary: Admin overview of rooms, finished games, daily counters and rate limits
+      description: >
+        Requires `Authorization: Bearer <ADMIN_TOKEN>`. Returns 503 when the
+        Worker has no ADMIN_TOKEN, 401 for a wrong token, and 429 after ten
+        wrong tokens from one network within 10 minutes.
+      responses:
+        "200": { description: AdminOverview (see protocol.ts) }
+        "401": { description: Invalid admin token }
+        "429": { description: Too many failed attempts }
+        "503": { description: Admin access not configured }
+  /api/admin/rooms/{roomCode}:
+    parameters:
+      - { name: roomCode, in: path, required: true, schema: { type: string } }
+    get:
+      summary: Room page data (AdminRoomDetail) with seats, moves and board while the room exists
+      description: "Requires `Authorization: Bearer <ADMIN_TOKEN>`."
+      responses:
+        "200": { description: AdminRoomDetail (see protocol.ts) }
+        "404": { description: Room not found }
+    delete:
+      summary: Delete a room, closing its sockets with 4004 and clearing its storage
+      description: "Requires `Authorization: Bearer <ADMIN_TOKEN>`. No history is kept for the deleted room."
+      responses:
+        "200": { description: "{ deleted: roomCode }" }
+        "404": { description: Room not found }
+  /api/admin/rate-limits/reset:
+    post:
+      summary: Clear room creation and join rate limits for every network
+      description: "Requires `Authorization: Bearer <ADMIN_TOKEN>`."
+      responses:
+        "200": { description: "{ cleared: number }" }
+        "401": { description: Invalid admin token }
   /api/rooms:
     post:
       summary: Create a private temporary room
@@ -27,6 +61,22 @@ paths:
         "201": { description: Room, player ID, and private reconnect token }
         "400": { description: Invalid input }
         "429": { description: Creation rate limited }
+  /api/rooms/{code}:
+    get:
+      summary: Whether an invite link can be used right now
+      description: >
+        Returns RoomStatus. Invite links call this before asking for a nickname
+        and poll every 5 seconds while the room is locked or full. Limited to
+        300 checks per network per 10 minutes, separate from join attempts.
+      parameters:
+        - { name: code, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          {
+            description: "{ joinable, reason: null | locked | full | started, host }",
+          }
+        "404": { description: "{ joinable: false, reason: missing }" }
+        "429": { description: Too many checks }
   /api/rooms/{code}/join:
     post:
       summary: Join an unstarted room
@@ -49,12 +99,23 @@ paths:
   /ws:
     get:
       summary: Authenticated WebSocket upgrade
+      description: >-
+        The seat token is never placed in the URL. The client offers two
+        subprotocols, `squabble.v1` and `token.<seat token>`, in
+        Sec-WebSocket-Protocol; the server selects `squabble.v1`. Because
+        browsers hide HTTP status codes from WebSocket clients, a refused
+        connection is upgraded and immediately closed with code 4004 (room
+        expired or deleted) or 4401 (seat token unknown, or the player left).
+        Clients retry other closes with exponential backoff.
       parameters:
         - { name: room, in: query, required: true, schema: { type: string } }
-        - { name: token, in: query, required: true, schema: { type: string } }
+        - name: Sec-WebSocket-Protocol
+          in: header
+          required: true
+          schema: { type: string, example: "squabble.v1, token.SEAT_TOKEN" }
       responses:
-        "101": { description: WebSocket upgraded }
-        "401": { description: Invalid seat token }
+        "101":
+          description: WebSocket upgraded, or upgraded and closed with 4004/4401
 components:
   schemas:
     RoomSettings:
@@ -68,3 +129,5 @@ components:
 # packages/game-engine/src/protocol.ts are authoritative. Every mutating client
 # action carries a UUID actionId and expected revision. Public snapshots omit
 # bag contents, tokens, and all racks; seat.private is sent only to its token.
+# Snapshots include lastMove (words and score of the latest turn), per-player
+# left flags, and rematchCode, which room.rematch sets once the game is over.

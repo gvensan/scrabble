@@ -2,3 +2,9 @@
 # WordSoHard is keyless; no dictionary credential is currently required.
 ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174
 RATE_LIMIT_SALT=replace-with-a-long-random-local-value
+# Rooms one network may create per hour. Production defaults to 10; local
+# development shares one address for every tab, so allow more here.
+ROOM_CREATE_LIMIT=200
+# Bearer token for the #/admin dashboard. Leave empty to disable admin access.
+# Generate one with: openssl rand -base64 32
+ADMIN_TOKEN=

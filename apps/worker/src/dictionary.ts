@@ -84,7 +84,8 @@ export async function validateWithWordSoHard(
         {
           headers: {
             accept: "application/json",
-            "user-agent": "Squabble/1.0 (word game; https://github.com/)",
+            "user-agent":
+              "Squabble/1.0 (word game; https://github.com/gvensan/squabble)",
           },
           signal: AbortSignal.timeout(4500),
         },

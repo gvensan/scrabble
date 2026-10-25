@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  analyzePlay,
   createBoard,
   createGame,
   exchangeTiles,
@@ -158,5 +159,71 @@ describe("gameplay", () => {
     for (let i = 0; i < 6; i += 1) state = passTurn(state);
     expect(state.phase).toBe("results");
     expect(state.endReason).toBe("six-scoreless-turns");
+  });
+  it("rejects a later play that only touches the board edge", () => {
+    const state = createGame(
+      { boardSize: 15, timerSeconds: 0 },
+      ["A", "B"],
+      new SequenceRandom(),
+    );
+    const first = playMove(state, placementsFor(state, 2, 7, 7), acceptAll);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(
+      playMove(first.state, placementsFor(first.state, 2, 0, 0), acceptAll),
+    ).toMatchObject({
+      ok: false,
+      error: "The play must connect to the board.",
+    });
+  });
+  it("records the last move for plays, exchanges and passes", () => {
+    const state = createGame(
+      { boardSize: 15, timerSeconds: 0 },
+      ["A", "B"],
+      new SequenceRandom(),
+    );
+    const played = playMove(state, placementsFor(state, 2, 7, 7), acceptAll);
+    expect(played.ok).toBe(true);
+    if (!played.ok) return;
+    expect(played.state.lastMove).toMatchObject({
+      playerIndex: 0,
+      kind: "play",
+      score: played.score,
+      tiles: 2,
+    });
+    expect(played.state.lastMove?.words).toEqual(played.words);
+    const id = played.state.players[1]!.rack[0]!.id;
+    const exchanged = exchangeTiles(played.state, [id], new SequenceRandom());
+    expect(exchanged.ok && exchanged.state.lastMove).toMatchObject({
+      playerIndex: 1,
+      kind: "exchange",
+      tiles: 1,
+    });
+    expect(
+      exchanged.ok && exchanged.state.history?.map((move) => move.kind),
+    ).toEqual(["play", "exchange"]);
+    expect(passTurn(state, "auto-pass").lastMove).toMatchObject({
+      playerIndex: 0,
+      kind: "auto-pass",
+      score: 0,
+    });
+  });
+  it("previews scores from a public board without a dictionary", () => {
+    const board = createBoard(15);
+    const preview = analyzePlay(board, [
+      { row: 7, col: 7, tile: { letter: "Q", value: 10 } },
+      { row: 7, col: 8, tile: { letter: null, value: 0, blankAs: "I" } },
+    ]);
+    expect(preview).toEqual({
+      ok: true,
+      words: [{ word: "QI", score: 10 }],
+      score: 10,
+      candidates: ["QI"],
+    });
+    expect(
+      analyzePlay(board, [
+        { row: 7, col: 7, tile: { letter: null, value: 0 } },
+      ]),
+    ).toMatchObject({ ok: false });
   });
 });

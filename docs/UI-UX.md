@@ -14,7 +14,7 @@ Friendly, understated, highly legible. It should feel like a polished casual boa
 
 ## Screen requirements
 Welcome: nickname remembered for session; inviting headline, primary Create and secondary Join; inline code input. If joining via invite, preload room and show one clear Join action.
-Lobby: code/link copy, connected/ready roster, board size and time settings, start button disabled with clear reason if fewer than two or players unready, host designation; sharing through device share sheet where supported.
+Lobby: invite link and code with copy, connected roster, host designation, start button disabled with a clear reason until a second player joins, lock/unlock room toggle, a short hint under each action, and sharing through the device share sheet where supported.
 Game desktop: board central, scores and actions adjacent, rack anchored near bottom, small contextual latest-play message. Mobile: board fills remaining viewport with independent pan and pinch zoom; rack and Play/Recall remain visible; score strip compact, collapsible menu for secondary actions. Avoid full-page horizontal scrolling.
 Results: standings with names, score, reason, optional dictionary highlights, New Game and Exit.
 

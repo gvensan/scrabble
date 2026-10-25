@@ -42,7 +42,8 @@ async function exercise(viewport, suffix) {
   });
 
   await page.getByPlaceholder("What should friends call you?").fill("Ada");
-  await page.getByRole("button", { name: /Create a local game/ }).click();
+  await page.getByRole("button", { name: /Create a game/ }).click();
+  await page.getByRole("button", { name: /Same device/ }).click();
   await assertViewportLocked(page, "settings", suffix);
   await page.screenshot({
     path: `artifacts/screenshots/18-settings-${suffix}.png`,
@@ -56,6 +57,9 @@ async function exercise(viewport, suffix) {
 
   await page.getByRole("button", { name: "Start game" }).click();
   await page.getByRole("button", { name: "Reveal my rack" }).click();
+  await page.locator("aside .match-status").getByText("Turn 1").waitFor();
+  if ((await page.locator("aside .score-list > div").count()) !== 2)
+    throw new Error("The local scoreboard does not list every participant.");
   await page.getByRole("button", { name: "Fit", exact: true }).click();
   if (suffix === "desktop") {
     const boardOverflow = await page
@@ -74,11 +78,11 @@ async function exercise(viewport, suffix) {
   });
 
   await page.goto(base);
-  await page.getByRole("button", { name: "Play online with friends" }).click();
-  await page.getByRole("button", { name: "Create online room" }).click();
-  await assertViewportLocked(page, "online setup", suffix);
+  await page.getByRole("button", { name: "Join with a code" }).click();
+  await page.getByRole("heading", { name: "Join a room" }).waitFor();
+  await assertViewportLocked(page, "online join", suffix);
   await page.screenshot({
-    path: `artifacts/screenshots/20-online-setup-${suffix}.png`,
+    path: `artifacts/screenshots/20-online-join-${suffix}.png`,
   });
   await context.close();
 }
@@ -93,7 +97,7 @@ try {
         "settings",
         "local lobby",
         "local game",
-        "online setup",
+        "online join",
       ],
       viewports: ["desktop", "phone"],
       documentOverflow: false,

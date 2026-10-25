@@ -2,13 +2,17 @@ import { createBoard, getOpeningCells } from "./board.js";
 import { createBag, drawTiles, shuffle } from "./bag.js";
 import { BINGO_BONUS, isLetter, RACK_SIZE } from "./config.js";
 import type {
+  BoardCell,
+  BoardTile,
   Cell,
   GameSettings,
   GameState,
+  LastMove,
   Letter,
   MoveResult,
   Placement,
   PlacedTile,
+  PlayAnalysis,
   PlayerState,
   RandomSource,
   Tile,
@@ -42,26 +46,32 @@ export function createGame(
     endReason: null,
   };
 }
-function boardHasTiles(board: GameState["board"]) {
+type Board = readonly (readonly BoardCell[])[];
+interface Positioned {
+  readonly row: number;
+  readonly col: number;
+  readonly tile: BoardTile;
+}
+function boardHasTiles(board: Board) {
   return board.some((row) => row.some((cell) => cell.tile !== null));
 }
 function readTile(
-  board: GameState["board"],
-  placed: ReadonlyMap<string, PlacedTile>,
+  board: Board,
+  placed: ReadonlyMap<string, BoardTile>,
   row: number,
   col: number,
 ) {
   return placed.get(cellKey(row, col)) ?? board[row]?.[col]?.tile ?? null;
 }
-function shown(tile: PlacedTile): Letter {
+function shown(tile: BoardTile): Letter {
   if (tile.letter !== null) return tile.letter;
   if (tile.blankAs === undefined) throw new Error("Blank has no letter.");
   return tile.blankAs;
 }
 function collectWord(
-  board: GameState["board"],
-  placed: ReadonlyMap<string, PlacedTile>,
-  origin: Placement,
+  board: Board,
+  placed: ReadonlyMap<string, BoardTile>,
+  origin: { row: number; col: number },
   rs: number,
   cs: number,
 ) {
@@ -71,7 +81,7 @@ function collectWord(
     row -= rs;
     col -= cs;
   }
-  const cells: { row: number; col: number; tile: PlacedTile }[] = [];
+  const cells: Positioned[] = [];
   let tile = readTile(board, placed, row, col);
   while (tile !== null) {
     cells.push({ row, col, tile });
@@ -82,9 +92,9 @@ function collectWord(
   return { cells, word: cells.map((item) => shown(item.tile)).join("") };
 }
 function scoreWord(
-  board: GameState["board"],
+  board: Board,
   newCells: ReadonlySet<string>,
-  cells: readonly { row: number; col: number; tile: PlacedTile }[],
+  cells: readonly Positioned[],
 ) {
   let subtotal = 0,
     multiplier = 1;
@@ -104,7 +114,9 @@ function finishTurn(
   bag: readonly Tile[],
   board: GameState["board"],
   scorelessTurns: number,
+  lastMove: LastMove,
 ): GameState {
+  const history = [...(state.history ?? []), lastMove];
   const wentOut =
       bag.length === 0 && players[state.currentPlayerIndex]?.rack.length === 0,
     stalled = scorelessTurns >= 6;
@@ -117,6 +129,8 @@ function finishTurn(
       scorelessTurns,
       currentPlayerIndex: (state.currentPlayerIndex + 1) % players.length,
       turnNumber: state.turnNumber + 1,
+      lastMove,
+      history,
     };
   const values = players.map((player) =>
       player.rack.reduce((sum, tile) => sum + tile.value, 0),
@@ -136,55 +150,33 @@ function finishTurn(
     scorelessTurns,
     phase: "results",
     endReason: wentOut ? "rack-emptied" : "six-scoreless-turns",
+    lastMove,
+    history,
   };
 }
-export function playMove(
-  state: GameState,
-  placements: readonly Placement[],
-  validator: WordValidator,
-): MoveResult {
-  if (state.phase !== "active")
-    return { ok: false, error: "This game is already finished." };
+/**
+ * Checks placement geometry and scores a provisional play without consulting
+ * a dictionary, so clients can preview and servers can collect the words.
+ */
+export function analyzePlay(
+  board: Board,
+  placements: readonly Positioned[],
+): PlayAnalysis {
   if (placements.length === 0)
     return { ok: false, error: "Place at least one tile." };
-  const player = state.players[state.currentPlayerIndex];
-  if (player === undefined)
-    return { ok: false, error: "Current player is missing." };
-  const rack = new Map(player.rack.map((tile) => [tile.id, tile])),
-    tileIds = new Set<string>(),
-    cells = new Set<string>(),
-    placed = new Map<string, PlacedTile>();
-  for (const placement of placements) {
-    const tile = rack.get(placement.tileId);
-    if (tile === undefined || tileIds.has(tile.id))
-      return { ok: false, error: "A placed tile is not in your rack." };
-    if (
-      !Number.isInteger(placement.row) ||
-      !Number.isInteger(placement.col) ||
-      state.board[placement.row]?.[placement.col] === undefined
-    )
+  const cells = new Set<string>(),
+    placed = new Map<string, BoardTile>();
+  for (const { row, col, tile } of placements) {
+    const target = board[row]?.[col];
+    if (!Number.isInteger(row) || !Number.isInteger(col) || !target)
       return { ok: false, error: "A tile is outside the board." };
-    const key = cellKey(placement.row, placement.col);
-    if (
-      cells.has(key) ||
-      state.board[placement.row]?.[placement.col]?.tile !== null
-    )
+    const key = cellKey(row, col);
+    if (cells.has(key) || target.tile !== null)
       return { ok: false, error: "Each tile needs an empty board cell." };
-    if (
-      tile.letter === null &&
-      (placement.blankAs === undefined || !isLetter(placement.blankAs))
-    )
+    if (tile.letter === null && !isLetter(tile.blankAs ?? ""))
       return { ok: false, error: "Choose a letter for every blank tile." };
-    if (tile.letter !== null && placement.blankAs !== undefined)
-      return { ok: false, error: "Only a blank can substitute a letter." };
-    tileIds.add(tile.id);
     cells.add(key);
-    placed.set(key, {
-      ...tile,
-      ...(placement.blankAs === undefined
-        ? {}
-        : { blankAs: placement.blankAs }),
-    });
+    placed.set(key, tile);
   }
   const first = placements[0];
   if (first === undefined)
@@ -201,7 +193,7 @@ export function playMove(
   ) {
     if (
       readTile(
-        state.board,
+        board,
         placed,
         sameRow ? first.row : value,
         sameRow ? value : first.col,
@@ -209,9 +201,9 @@ export function playMove(
     )
       return { ok: false, error: "Tiles cannot leave an empty gap." };
   }
-  if (!boardHasTiles(state.board)) {
+  if (!boardHasTiles(board)) {
     if (
-      !getOpeningCells(state.settings.boardSize).some(({ row, col }) =>
+      !getOpeningCells(board.length).some(({ row, col }) =>
         cells.has(cellKey(row, col)),
       )
     )
@@ -226,7 +218,7 @@ export function playMove(
         [row + 1, col],
         [row, col - 1],
         [row, col + 1],
-      ].some(([r, c]) => state.board[r ?? -1]?.[c ?? -1]?.tile !== null),
+      ].some(([r, c]) => (board[r ?? -1]?.[c ?? -1]?.tile ?? null) !== null),
     );
     if (!connected)
       return { ok: false, error: "The play must connect to the board." };
@@ -237,7 +229,7 @@ export function playMove(
       [0, 1],
       [1, 0],
     ] as const) {
-      const word = collectWord(state.board, placed, placement, rs, cs);
+      const word = collectWord(board, placed, placement, rs, cs);
       if (word.cells.length >= 2)
         found.set(
           word.cells.map(({ row, col }) => cellKey(row, col)).join("|"),
@@ -249,21 +241,62 @@ export function playMove(
       ok: false,
       error: "A play must create a word with at least two letters.",
     };
-  const unique = [...new Set([...found.values()].map((item) => item.word))],
-    valid = validator(unique),
-    invalid = unique.find((word) => valid.get(word) !== true);
+  const words: WordScore[] = [...found.values()].map((item) => ({
+    word: item.word,
+    score: scoreWord(board, cells, item.cells),
+  }));
+  return {
+    ok: true,
+    words,
+    score:
+      words.reduce((sum, item) => sum + item.score, 0) +
+      (placements.length === RACK_SIZE ? BINGO_BONUS : 0),
+    candidates: [...new Set(words.map((item) => item.word))],
+  };
+}
+export function playMove(
+  state: GameState,
+  placements: readonly Placement[],
+  validator: WordValidator,
+): MoveResult {
+  if (state.phase !== "active")
+    return { ok: false, error: "This game is already finished." };
+  if (placements.length === 0)
+    return { ok: false, error: "Place at least one tile." };
+  const player = state.players[state.currentPlayerIndex];
+  if (player === undefined)
+    return { ok: false, error: "Current player is missing." };
+  const rack = new Map(player.rack.map((tile) => [tile.id, tile])),
+    tileIds = new Set<string>(),
+    positioned: { row: number; col: number; tile: PlacedTile }[] = [];
+  for (const placement of placements) {
+    const tile = rack.get(placement.tileId);
+    if (tile === undefined || tileIds.has(tile.id))
+      return { ok: false, error: "A placed tile is not in your rack." };
+    if (tile.letter !== null && placement.blankAs !== undefined)
+      return { ok: false, error: "Only a blank can substitute a letter." };
+    tileIds.add(tile.id);
+    positioned.push({
+      row: placement.row,
+      col: placement.col,
+      tile:
+        placement.blankAs === undefined
+          ? tile
+          : { ...tile, blankAs: placement.blankAs },
+    });
+  }
+  const analysis = analyzePlay(state.board, positioned);
+  if (!analysis.ok) return analysis;
+  const valid = validator(analysis.candidates),
+    invalid = analysis.candidates.find((word) => valid.get(word) !== true);
   if (invalid !== undefined)
     return {
       ok: false,
       error: `${invalid} is not accepted by the dictionary.`,
     };
-  const words: WordScore[] = [...found.values()].map((item) => ({
-      word: item.word,
-      score: scoreWord(state.board, cells, item.cells),
-    })),
-    score =
-      words.reduce((sum, item) => sum + item.score, 0) +
-      (placements.length === 7 ? BINGO_BONUS : 0),
+  const placed = new Map(
+      positioned.map(({ row, col, tile }) => [cellKey(row, col), tile]),
+    ),
     board = state.board.map((row, r) =>
       row.map(
         (cell, c): Cell => ({
@@ -278,7 +311,7 @@ export function playMove(
       index === state.currentPlayerIndex
         ? {
             ...entry,
-            score: entry.score + score,
+            score: entry.score + analysis.score,
             rack: [...kept, ...draw.drawn],
           }
         : entry,
@@ -290,19 +323,36 @@ export function playMove(
       players,
       draw.bag,
       board,
-      score === 0 ? state.scorelessTurns + 1 : 0,
+      analysis.score === 0 ? state.scorelessTurns + 1 : 0,
+      {
+        playerIndex: state.currentPlayerIndex,
+        kind: "play",
+        words: analysis.words,
+        score: analysis.score,
+        tiles: placements.length,
+      },
     ),
-    words,
-    score,
+    words: analysis.words,
+    score: analysis.score,
   };
 }
-export function passTurn(state: GameState): GameState {
+export function passTurn(
+  state: GameState,
+  kind: "pass" | "auto-pass" = "pass",
+): GameState {
   return finishTurn(
     state,
     state.players,
     state.bag,
     state.board,
     state.scorelessTurns + 1,
+    {
+      playerIndex: state.currentPlayerIndex,
+      kind,
+      words: [],
+      score: 0,
+      tiles: 0,
+    },
   );
 }
 export function exchangeTiles(
@@ -340,6 +390,13 @@ export function exchangeTiles(
       bag,
       state.board,
       state.scorelessTurns + 1,
+      {
+        playerIndex: state.currentPlayerIndex,
+        kind: "exchange",
+        words: [],
+        score: 0,
+        tiles: returned.length,
+      },
     ),
     words: [],
     score: 0,

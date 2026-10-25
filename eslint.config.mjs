@@ -10,6 +10,7 @@ export default tseslint.config(
       "**/node_modules/**",
       "**/.wrangler/**",
       "eslint.config.mjs",
+      "vitest.config.mjs",
     ],
   },
   eslint.configs.recommended,
