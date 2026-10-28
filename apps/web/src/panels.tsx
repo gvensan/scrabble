@@ -443,7 +443,7 @@ export function RulesDialog({
                     <small>
                       The bag is empty and a player uses their last tile. Others
                       lose the value of their leftover tiles; the player who
-                      went out gains it all.
+                      went out gains it all. No score drops below zero.
                     </small>
                   </div>
                 </li>
@@ -454,7 +454,7 @@ export function RulesDialog({
                     <small>
                       Passes, exchanges, timed-out turns and rejected words,
                       across all players. Everyone loses the value of their own
-                      leftover tiles.
+                      leftover tiles, but never drops below zero.
                     </small>
                   </div>
                 </li>
@@ -468,7 +468,8 @@ export function RulesDialog({
                     </b>
                     <small>
                       Scored the same way: everyone loses the value of their own
-                      leftover tiles, and the highest total wins.
+                      leftover tiles (never below zero), and the highest total
+                      wins.
                     </small>
                   </div>
                 </li>

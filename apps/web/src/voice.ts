@@ -135,6 +135,28 @@ export function speakingAt(
   return speaking;
 }
 
+/**
+ * Marks the call's audio as high priority, so browsers and networks that
+ * honour it send voice ahead of other traffic (the default is "low"). Best
+ * effort: a browser that refuses keeps the default.
+ */
+async function prioritize(pc: RTCPeerConnection) {
+  for (const sender of pc.getSenders()) {
+    if (sender.track?.kind !== "audio") continue;
+    const parameters = sender.getParameters();
+    if (!parameters.encodings.length) continue;
+    parameters.encodings = parameters.encodings.map((encoding) => ({
+      ...encoding,
+      priority: "high",
+      networkPriority: "high",
+    }));
+    try {
+      await sender.setParameters(parameters);
+    } catch {
+      // Unsupported here; the call carries on at default priority.
+    }
+  }
+}
 function newSession(): string {
   const bytes = new Uint8Array(12);
   crypto.getRandomValues(bytes);
@@ -504,6 +526,7 @@ export class VoiceSession {
       this.attempts.delete(link.playerId);
       if (link.watchdog !== null) window.clearTimeout(link.watchdog);
       link.watchdog = null;
+      void prioritize(link.pc);
     } else if (state === "failed") {
       this.retry(link);
       return;

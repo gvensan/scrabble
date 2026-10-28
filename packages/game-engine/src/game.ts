@@ -147,8 +147,7 @@ function finishTurn(
     players: players.map((player, index) => ({
       ...player,
       score:
-        player.score -
-        (values[index] ?? 0) +
+        withoutTiles(player.score, values[index] ?? 0) +
         (wentOut && index === state.currentPlayerIndex ? total : 0),
     })),
     scorelessTurns,
@@ -479,6 +478,13 @@ export function stampMoves(
     : after;
 }
 /**
+ * A score after leftover tiles are deducted at the end of a game. Scores never
+ * go below zero: a player loses at most the points they have.
+ */
+export function withoutTiles(score: number, leftover: number): number {
+  return Math.max(0, score - leftover);
+}
+/**
  * Ends an active game early by agreement. Nobody went out, so it settles like
  * a stalled game: each player loses the value of their own remaining tiles.
  */
@@ -488,8 +494,10 @@ export function endGame(state: GameState): GameState {
     ...state,
     players: state.players.map((player) => ({
       ...player,
-      score:
-        player.score - player.rack.reduce((sum, tile) => sum + tile.value, 0),
+      score: withoutTiles(
+        player.score,
+        player.rack.reduce((sum, tile) => sum + tile.value, 0),
+      ),
     })),
     phase: "results",
     endReason: "ended-early",

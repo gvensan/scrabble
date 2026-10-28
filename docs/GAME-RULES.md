@@ -11,7 +11,7 @@ Original Scrabble-inspired gameplay, not represented as official Scrabble. Conve
 - Seven newly placed tiles in one turn award +50 bonus.
 - Exchange allowed only if >=7 tiles remain in the bag before exchange; player selects 1..rack length, tiles returned and bag reshuffled, replacement drawn; exchange is a scoreless turn.
 - Pass is a scoreless turn. Six consecutive scoreless turns (across all players) end the game. A scoring move resets the count.
-- If a player's rack empties with empty bag, finish: subtract each player's remaining rack value and award that sum to player who went out. If six scoreless turns end the game, subtract each player's own remaining tile value, no going-out bonus.
+- If a player's rack empties with empty bag, finish: subtract each player's remaining rack value and award that sum to player who went out. If six scoreless turns end the game, subtract each player's own remaining tile value, no going-out bonus. Ending early by agreement scores the same way. A deduction never takes a score below zero: a player loses at most the points they have. A rejected word scores 0 and costs the turn.
 - Room hard expiry: show leaderboard with **provisional / timed-out result** based on current committed scores, not a normal completed game. Avoid inventing standard endgame adjustments.
 
 ## Configurable boards

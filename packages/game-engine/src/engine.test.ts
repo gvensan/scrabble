@@ -184,6 +184,8 @@ describe("gameplay", () => {
     for (let i = 0; i < 6; i += 1) state = passTurn(state);
     expect(state.phase).toBe("results");
     expect(state.endReason).toBe("six-scoreless-turns");
+    // Nobody scored, so the leftover tiles cannot take anyone below zero.
+    expect(state.players.map((player) => player.score)).toEqual([0, 0]);
   });
   it("rejects a later play that only touches the board edge", () => {
     const state = createGame(
@@ -305,7 +307,7 @@ describe("move timing", () => {
   });
 });
 describe("ending and replay data", () => {
-  it("ends early by deducting each player's own remaining tiles", () => {
+  it("ends early by deducting each player's own remaining tiles, never below zero", () => {
     const state = createGame(
       { boardSize: 15, timerSeconds: 0 },
       ["A", "B"],
@@ -319,7 +321,19 @@ describe("ending and replay data", () => {
         (sum, tile) => sum + tile.value,
         0,
       );
-      expect(player.score).toBe(-held);
+      expect(held).toBeGreaterThan(0);
+      expect(player.score).toBe(0);
+    });
+    const scored = endGame({
+      ...state,
+      players: state.players.map((player) => ({ ...player, score: 100 })),
+    });
+    scored.players.forEach((player, index) => {
+      const held = state.players[index]!.rack.reduce(
+        (sum, tile) => sum + tile.value,
+        0,
+      );
+      expect(player.score).toBe(100 - held);
     });
     expect(endGame(ended)).toBe(ended);
   });
