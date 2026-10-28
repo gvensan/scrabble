@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 
-export const MIN_CELL = 26;
+/** Small enough that a 15×15 board fits a phone's width. */
+export const MIN_CELL = 16;
+/** Below this the cell text shrinks with the cell (.board.tight). */
+export const TIGHT_CELL = 26;
 export const MAX_CELL = 58;
 
 /**

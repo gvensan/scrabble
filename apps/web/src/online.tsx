@@ -41,6 +41,7 @@ import {
 import {
   MAX_CELL,
   MIN_CELL,
+  TIGHT_CELL,
   useBoardKeys,
   usePinchZoom,
 } from "./board-input.js";
@@ -79,6 +80,12 @@ interface Seat {
 }
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
+/**
+ * Shown when the server's reply does not match this page's room format: the
+ * tab still runs a previous release. Reloading fixes it.
+ */
+const OUTDATED =
+  "This page is out of date: the game has been updated. Reload the page to get the latest version.";
 function isPublicRoom(value: unknown): value is PublicRoom {
   if (!isRecord(value) || !isRecord(value.settings)) return false;
   const settings = value.settings;
@@ -645,7 +652,11 @@ export function OnlineGame({
           voiceSession.current?.handle(message);
           return;
         }
-        if (!isServerMessage(message)) throw new Error("Invalid message.");
+        // A message this page cannot read: the tab runs a previous release.
+        if (!isServerMessage(message)) {
+          setStatus(OUTDATED);
+          return;
+        }
         if (message.type === "room.snapshot") {
           if (
             revision.current >= 0 &&
@@ -738,7 +749,8 @@ export function OnlineGame({
     sessionStorage.setItem(`scrabble.room.${result.roomCode}`, result.token);
     setCode(result.roomCode);
     if (result.snapshot && !isPublicRoom(result.snapshot)) {
-      setStatus("The server returned an invalid room state.");
+      // An open tab still running the previous release; a reload fixes it.
+      setStatus(OUTDATED);
       return;
     }
     revision.current = -1;
@@ -920,12 +932,21 @@ export function OnlineGame({
                   <button className="secondary" onClick={onExit}>
                     Back
                   </button>
-                  <button
-                    className="primary"
-                    onClick={() => void enter("create", create)}
-                  >
-                    Try again
-                  </button>
+                  {status === OUTDATED ? (
+                    <button
+                      className="primary"
+                      onClick={() => location.reload()}
+                    >
+                      Reload page
+                    </button>
+                  ) : (
+                    <button
+                      className="primary"
+                      onClick={() => void enter("create", create)}
+                    >
+                      Try again
+                    </button>
+                  )}
                 </div>
               )}
             </>
@@ -1317,7 +1338,7 @@ export function OnlineGame({
           {room.players.map((player) => (
             <span
               key={player.id}
-              className={`${player.left ? "left" : ""} ${voice?.speaking.has(player.id) ? "speaking" : ""}`}
+              className={`${player.left ? "left" : ""} ${voice?.speaking.has(player.id) ? "speaking" : ""} ${room.phase === "active" && player.id === room.currentPlayerId ? "current" : ""}`}
             >
               {player.nickname} <strong>{player.score}</strong>
               <VoiceBadge voice={voice} playerId={player.id} />
@@ -1415,13 +1436,14 @@ export function OnlineGame({
           </div>
         )}
         <div
-          className="board"
+          className={`board${cellSize < TIGHT_CELL ? " tight" : ""}`}
           role="group"
           aria-label={`${room.settings.boardSize} by ${room.settings.boardSize} board. Use arrow keys to move between squares.`}
           onKeyDown={keys.onKeyDown}
           style={{
             gridTemplateColumns: `repeat(${room.settings.boardSize},${cellSize}px)`,
             gridAutoRows: `${cellSize}px`,
+            ["--cell" as string]: `${cellSize}px`,
           }}
         >
           {board.flatMap((row, r) =>

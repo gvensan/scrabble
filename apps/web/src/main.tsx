@@ -34,6 +34,7 @@ import "./styles.css";
 import {
   MAX_CELL,
   MIN_CELL,
+  TIGHT_CELL,
   useBoardKeys,
   usePinchZoom,
 } from "./board-input.js";
@@ -1050,11 +1051,12 @@ function App() {
             </div>
           )}
           <div
-            className="board"
+            className={`board${cellSize < TIGHT_CELL ? " tight" : ""}`}
             role="group"
             onKeyDown={keys.onKeyDown}
             style={{
               gridTemplateColumns: `repeat(${game.settings.boardSize},${cellSize}px)`,
+              ["--cell" as string]: `${cellSize}px`,
             }}
             aria-label={`${game.settings.boardSize} by ${game.settings.boardSize} board. Use arrow keys to move between squares.`}
           >

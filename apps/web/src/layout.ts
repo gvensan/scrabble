@@ -1,3 +1,11 @@
+import { MAX_CELL, MIN_CELL, TIGHT_CELL } from "./board-input.js";
+
+/**
+ * Phones may shrink cells to MIN_CELL so a whole board fits; wider screens
+ * keep readable cells and scroll big boards instead.
+ */
+const floor = () => (window.innerWidth <= 560 ? MIN_CELL : TIGHT_CELL);
+
 function pixels(value: string | undefined): number {
   return Number.parseFloat(value ?? "") || 0;
 }
@@ -54,7 +62,10 @@ export function fittedCellSize(
         Math.max(0, boardSize - 1) * rowGap -
         2) /
       boardSize;
-    return Math.max(26, Math.min(58, Math.floor(Math.min(width, height))));
+    return Math.max(
+      floor(),
+      Math.min(MAX_CELL, Math.floor(Math.min(width, height))),
+    );
   }
   const compact = window.innerWidth <= 800;
   const availableWidth = compact
@@ -67,5 +78,5 @@ export function fittedCellSize(
   const size = Math.floor(
     (Math.min(availableWidth, availableHeight) - gapsAndFrame) / boardSize,
   );
-  return Math.max(26, Math.min(58, size));
+  return Math.max(floor(), Math.min(MAX_CELL, size));
 }
