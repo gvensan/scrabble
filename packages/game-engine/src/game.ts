@@ -1,5 +1,5 @@
 import { createBoard, getOpeningCells } from "./board.js";
-import { createBag, drawTiles, shuffle } from "./bag.js";
+import { createBag, drawTiles, maxPlayersFor, shuffle } from "./bag.js";
 import { BINGO_BONUS, isLetter, RACK_SIZE } from "./config.js";
 import type {
   BoardCell,
@@ -10,6 +10,7 @@ import type {
   LastMove,
   Letter,
   MoveResult,
+  ChallengeOutcome,
   Placement,
   PlacedTile,
   PlayAnalysis,
@@ -25,8 +26,11 @@ export function createGame(
   names: readonly string[],
   random: RandomSource,
 ): GameState {
-  if (names.length < 2 || names.length > 4)
-    throw new RangeError("A game needs 2–4 players.");
+  const most = maxPlayersFor(settings.boardSize);
+  if (names.length < 2 || names.length > most)
+    throw new RangeError(
+      `A ${settings.boardSize}×${settings.boardSize} game takes 2 to ${most} players.`,
+    );
   let bag = createBag(settings.boardSize, random);
   const players: PlayerState[] = names.map((name, index) => {
     const draw = drawTiles(bag, RACK_SIZE);
@@ -288,11 +292,29 @@ export function playMove(
   const analysis = analyzePlay(state.board, positioned);
   if (!analysis.ok) return analysis;
   const valid = validator(analysis.candidates),
-    invalid = analysis.candidates.find((word) => valid.get(word) !== true);
-  if (invalid !== undefined)
+    rejected = analysis.candidates.filter((word) => valid.get(word) !== true);
+  // A submitted play is final: an invalid word costs the turn, scores 0 and
+  // the tiles stay on the player's rack.
+  if (rejected.length)
     return {
-      ok: false,
-      error: `${invalid} is not accepted by the dictionary.`,
+      ok: true,
+      state: finishTurn(
+        state,
+        state.players,
+        state.bag,
+        state.board,
+        state.scorelessTurns + 1,
+        {
+          playerIndex: state.currentPlayerIndex,
+          kind: "rejected",
+          words: rejected.map((word) => ({ word, score: 0 })),
+          score: 0,
+          tiles: placements.length,
+        },
+      ),
+      words: [],
+      score: 0,
+      rejected,
     };
   const placed = new Map(
       positioned.map(({ row, col, tile }) => [cellKey(row, col), tile]),
@@ -330,10 +352,31 @@ export function playMove(
         words: analysis.words,
         score: analysis.score,
         tiles: placements.length,
+        placed: positioned.map(({ row, col, tile }) => ({
+          row,
+          col,
+          letter: tile.letter,
+          value: tile.value,
+          ...(tile.blankAs === undefined ? {} : { blankAs: tile.blankAs }),
+        })),
       },
     ),
     words: analysis.words,
     score: analysis.score,
+  };
+}
+/** Records how a dictionary rejection was settled on the move just made. */
+export function withChallenge(
+  state: GameState,
+  challenge: ChallengeOutcome,
+): GameState {
+  const last = state.lastMove;
+  if (!last) return state;
+  const tagged = { ...last, challenge };
+  return {
+    ...state,
+    lastMove: tagged,
+    history: [...(state.history ?? []).slice(0, -1), tagged],
   };
 }
 export function passTurn(
@@ -400,5 +443,55 @@ export function exchangeTiles(
     ),
     words: [],
     score: 0,
+  };
+}
+/**
+ * Records `now` as the end time of every turn finished between `before` and
+ * `after`, and how long each took. The engine never reads the clock, so
+ * callers stamp moves after each transition. A turn is timed from
+ * `turnStartedAt`, falling back to the previous move or the game start for
+ * games saved before it existed; turns finished together (a run of automatic
+ * passes) take no time after the first.
+ */
+export function stampMoves(
+  before: GameState,
+  after: GameState,
+  now: number,
+): GameState {
+  const done = before.history?.length ?? 0,
+    history = after.history ?? [];
+  if (history.length <= done) return after;
+  const begun =
+    before.turnStartedAt ?? before.history?.at(-1)?.at ?? before.startedAt;
+  const stamped = history.map((move, index) => {
+    if (index < done) return move;
+    const took =
+      index > done ? 0 : begun === undefined ? undefined : now - begun;
+    return {
+      ...move,
+      at: now,
+      ...(took === undefined ? {} : { took: Math.max(0, took) }),
+    };
+  });
+  const lastMove = stamped.at(-1);
+  return lastMove
+    ? { ...after, history: stamped, lastMove, turnStartedAt: now }
+    : after;
+}
+/**
+ * Ends an active game early by agreement. Nobody went out, so it settles like
+ * a stalled game: each player loses the value of their own remaining tiles.
+ */
+export function endGame(state: GameState): GameState {
+  if (state.phase !== "active") return state;
+  return {
+    ...state,
+    players: state.players.map((player) => ({
+      ...player,
+      score:
+        player.score - player.rack.reduce((sum, tile) => sum + tile.value, 0),
+    })),
+    phase: "results",
+    endReason: "ended-early",
   };
 }

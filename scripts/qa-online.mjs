@@ -82,14 +82,14 @@ try {
     );
   if (!scoreboardLast)
     throw new Error("The scoreboard is not below the zoom controls.");
-  await host.getByRole("button", { name: "Rules and dictionary" }).click();
+  await host.getByRole("button", { name: "Rules of play" }).click();
   await host
-    .getByRole("dialog", { name: "Rules and dictionary" })
+    .getByRole("dialog", { name: "Rules of play" })
     .getByText(/WordSoHard word list/)
     .waitFor();
   await host.keyboard.press("Escape");
   await host
-    .getByRole("dialog", { name: "Rules and dictionary" })
+    .getByRole("dialog", { name: "Rules of play" })
     .waitFor({ state: "detached" });
   await host.locator("aside .match-status").getByText("Turn 1").waitFor();
   if ((await host.locator("aside .score-list > div").count()) !== 2)
@@ -130,8 +130,12 @@ try {
   const timerText = await host.locator("aside .turn-card strong").textContent();
   if (!timerText?.match(/^\d+:\d{2}$/))
     throw new Error("The authoritative timer is not prominent in the sidebar.");
-  await host.getByRole("button", { name: "Mute game sounds" }).click();
-  await host.getByRole("button", { name: "Turn sounds on" }).click();
+  // The host's sound button opens settings, including the room's voice switch.
+  await host.getByRole("button", { name: "Sound settings" }).click();
+  await host.getByLabel("Voice chat for this room").waitFor();
+  await host.getByLabel("Game sounds").uncheck();
+  await host.getByLabel("Game sounds").check();
+  await host.keyboard.press("Escape");
 
   await host.locator(".rack button:not(:disabled)").first().dragTo(center);
   if (
@@ -207,21 +211,32 @@ try {
     fullPage: true,
   });
 
-  // Six passes end the game; then a rematch is shared with the other player.
+  // Six passes end the game, with a warning first and an explanation after.
   for (let turn = 0; turn < 6; turn += 1) {
     const actor = turn % 2 === 0 ? host : guest;
     await actor.getByRole("button", { name: "Pass", exact: true }).click();
     await actor.getByRole("button", { name: "Pass turn" }).click();
     if (turn === 0)
       await guest.locator(".last-play").getByText("Ada passed.").waitFor();
+    if (turn === 3) await host.locator(".scoreless-warning").waitFor();
   }
+  // Everyone gets the ending explained and acknowledges it.
+  for (const page of [host, guest])
+    await page.getByRole("button", { name: "OK, see the results" }).click();
   await host.getByText("Finished after six scoreless turns.").waitFor();
   await guest.getByText("Finished after six scoreless turns.").waitFor();
-  await host.getByRole("button", { name: "Create a rematch room" }).click();
-  await host.getByRole("heading", { name: "Gather your players" }).waitFor();
-  await guest.getByRole("button", { name: "Join the rematch" }).click();
-  await guest.getByRole("heading", { name: "Gather your players" }).waitFor();
-  await host.locator(".roster").getByText("Lin", { exact: true }).waitFor();
+  // The results page: leaderboard and moments tabs, then the final board.
+  await host.getByRole("tab", { name: "Leaderboard" }).waitFor();
+  await guest.getByRole("tab", { name: "Moments" }).click();
+  await guest.getByRole("img", { name: /The final board/ }).waitFor();
+  const summaryPage = await host.context().newPage();
+  await summaryPage.goto(`${base}/?game=${roomCode}`);
+  await summaryPage
+    .getByRole("tab", { name: "Leaderboard" })
+    .waitFor({ timeout: 15_000 });
+  await summaryPage.close();
+  if (await host.getByRole("button", { name: /rematch/i }).count())
+    throw new Error("The results screen still offers a rematch.");
 
   const closerContext = await browser.newContext();
   const leaverContext = await browser.newContext();
@@ -272,7 +287,8 @@ try {
       boardArrowKeys: true,
       lastPlayAnnounced: true,
       sixPassEnding: true,
-      sharedRematch: true,
+      scorelessWarning: true,
+      summaryPage: true,
       inviteLink: true,
     }),
   );

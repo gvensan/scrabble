@@ -10,6 +10,8 @@ import {
   analyzePlay,
   getOpeningCells,
   shuffle,
+  seatsFor,
+  summarizeRoom,
   type BoardCell,
   type Letter,
 } from "@scrabble/game-engine";
@@ -22,6 +24,20 @@ import {
   type RoomStatus,
   type ServerMessage,
 } from "@scrabble/game-engine/protocol";
+import { isVoiceMessage, useVoice } from "./voice.js";
+import {
+  ChallengeNotice,
+  ChallengeReview,
+  type ChallengeView,
+} from "./challenge.js";
+import { NoticeStack, roomNotices, useNotices } from "./notices.js";
+import { RoomSettingsDialog, settingsText } from "./room-settings.js";
+import {
+  SoundControls,
+  speakingText,
+  VoiceBadge,
+  VoicePanel,
+} from "./voice-ui.js";
 import {
   MAX_CELL,
   MIN_CELL,
@@ -31,8 +47,25 @@ import {
 import { api, wsBase } from "./config.js";
 import { recallLast } from "./draft.js";
 import { fittedCellSize } from "./layout.js";
-import { LastPlay, RulesDialog, ScorePreview } from "./panels.js";
+import {
+  BoardLegend,
+  ExchangeDialog,
+  HistoryDialog,
+  LastPlay,
+  type HistoryMove,
+  RulesDialog,
+  ScorelessEndDialog,
+  ScorelessWarning,
+  ScorePreview,
+} from "./panels.js";
+import { canReplay, ReplayDialog } from "./replay.js";
 import { formatClock, type GameSounds } from "./sound.js";
+import {
+  rememberGame,
+  ResultsPage,
+  summaryLink,
+  winnerTitle,
+} from "./summary.js";
 
 interface Tile {
   id: string;
@@ -55,7 +88,7 @@ function isPublicRoom(value: unknown): value is PublicRoom {
     Number.isInteger(settings.boardSize) &&
     Number(settings.boardSize) >= 7 &&
     Number(settings.boardSize) <= 40 &&
-    [2, 3, 4].includes(Number(settings.capacity)) &&
+    [2, 3, 4, 8].includes(Number(settings.capacity)) &&
     [0, 120, 300].includes(Number(settings.timerSeconds)) &&
     Array.isArray(value.players) &&
     value.players.every(
@@ -98,16 +131,36 @@ function isPublicRoom(value: unknown): value is PublicRoom {
     typeof value.revision === "number" &&
     typeof value.expiresAt === "number" &&
     (value.endReason === null || typeof value.endReason === "string") &&
-    (value.rematchCode === null || typeof value.rematchCode === "string") &&
     typeof value.locked === "boolean" &&
-    (value.lastMove === null || isLastMove(value.lastMove))
+    (value.lastMove === null || isLastMove(value.lastMove)) &&
+    (value.history === undefined ||
+      (Array.isArray(value.history) && value.history.every(isLastMove))) &&
+    (value.startedAt === undefined ||
+      value.startedAt === null ||
+      typeof value.startedAt === "number") &&
+    (value.challenge === undefined ||
+      value.challenge === null ||
+      isChallenge(value.challenge))
   );
 }
-function isLastMove(value: unknown) {
+function isPlacedTile(tile: unknown) {
+  return (
+    isRecord(tile) &&
+    typeof tile.row === "number" &&
+    typeof tile.col === "number" &&
+    (tile.letter === null || typeof tile.letter === "string") &&
+    (tile.blankAs === undefined || typeof tile.blankAs === "string") &&
+    typeof tile.value === "number"
+  );
+}
+function isChallenge(value: unknown) {
   return (
     isRecord(value) &&
-    (value.playerId === null || typeof value.playerId === "string") &&
-    ["play", "pass", "exchange", "auto-pass"].includes(String(value.kind)) &&
+    typeof value.playerId === "string" &&
+    (value.stage === "decide" || value.stage === "review") &&
+    typeof value.deadline === "number" &&
+    Array.isArray(value.rejected) &&
+    value.rejected.every((word) => typeof word === "string") &&
     Array.isArray(value.words) &&
     value.words.every(
       (item) =>
@@ -116,7 +169,37 @@ function isLastMove(value: unknown) {
         typeof item.score === "number",
     ) &&
     typeof value.score === "number" &&
-    typeof value.tiles === "number"
+    Array.isArray(value.placed) &&
+    value.placed.every(isPlacedTile) &&
+    typeof value.challengesLeft === "number"
+  );
+}
+function isLastMove(value: unknown) {
+  return (
+    isRecord(value) &&
+    (value.playerId === null || typeof value.playerId === "string") &&
+    ["play", "pass", "exchange", "auto-pass", "rejected"].includes(
+      String(value.kind),
+    ) &&
+    Array.isArray(value.words) &&
+    value.words.every(
+      (item) =>
+        isRecord(item) &&
+        typeof item.word === "string" &&
+        typeof item.score === "number",
+    ) &&
+    typeof value.score === "number" &&
+    typeof value.tiles === "number" &&
+    (value.at === undefined || typeof value.at === "number") &&
+    (value.took === undefined || typeof value.took === "number") &&
+    (value.challenge === undefined ||
+      (isRecord(value.challenge) &&
+        ["accepted", "approved", "rejected", "expired"].includes(
+          String(value.challenge.outcome),
+        ) &&
+        typeof value.challenge.challenged === "boolean")) &&
+    (value.placed === undefined ||
+      (Array.isArray(value.placed) && value.placed.every(isPlacedTile)))
   );
 }
 /** Automatic reconnects (about two and a half minutes of backoff) before
@@ -159,12 +242,29 @@ function isServerMessage(value: unknown): value is ServerMessage {
       isSeat(value.seat)
     );
   if (value.type === "game.pending") return typeof value.actionId === "string";
+  if (value.type === "game.draft")
+    return (
+      typeof value.playerId === "string" &&
+      Array.isArray(value.cells) &&
+      value.cells.length <= 7 &&
+      value.cells.every(
+        (cell) =>
+          isRecord(cell) &&
+          typeof cell.row === "number" &&
+          typeof cell.col === "number" &&
+          (cell.letter === null || typeof cell.letter === "string") &&
+          (cell.blankAs === undefined || typeof cell.blankAs === "string") &&
+          typeof cell.value === "number",
+      )
+    );
   return value.type === "error" && typeof value.message === "string";
 }
 export interface RoomSettings {
   boardSize: number;
-  capacity: 2 | 3 | 4;
+  /** 8 is "4+": as many as the board allows, up to eight. */
+  capacity: 2 | 3 | 4 | 8;
   timerSeconds: 0 | 120 | 300;
+  voice?: boolean | undefined;
 }
 interface Props {
   nickname: string;
@@ -175,6 +275,8 @@ interface Props {
   onThemeChange: (theme: "garden" | "candy" | "midnight") => void;
   sounds: GameSounds;
 }
+/** When a finished room's game ended, as near as the snapshot tells. */
+const endedAt = (room: PublicRoom) => room.history?.at(-1)?.at ?? Date.now();
 const premiumName = {
   TW: "triple word",
   DW: "double word",
@@ -212,11 +314,26 @@ export function OnlineGame({
     [seat, setSeat] = useState<Seat | null>(null),
     [status, setStatus] = useState(""),
     [showRules, setShowRules] = useState(false),
+    [showHistory, setShowHistory] = useState(false),
+    [showReplay, setShowReplay] = useState(false),
+    [editingSettings, setEditingSettings] = useState(false),
+    [confirmEnd, setConfirmEnd] = useState(false),
+    // Set when I watched the game end on six scoreless turns.
+    [scorelessEnd, setScorelessEnd] = useState(false),
+    // Tiles the current player is trying, relayed live by the server.
+    [ghost, setGhost] = useState<{
+      playerId: string;
+      cells: readonly {
+        row: number;
+        col: number;
+        letter: string | null;
+        blankAs?: string | undefined;
+        value: number;
+      }[];
+    } | null>(null),
     [selected, setSelected] = useState<string | null>(null),
-    [exchangeMode, setExchangeMode] = useState(false),
-    [exchangeIds, setExchangeIds] = useState<string[]>([]),
     [confirmPass, setConfirmPass] = useState(false),
-    [confirmExchange, setConfirmExchange] = useState(false),
+    [exchanging, setExchanging] = useState(false),
     [blankTarget, setBlankTarget] = useState<{
       tileId: string;
       row: number;
@@ -247,9 +364,12 @@ export function OnlineGame({
     revision = useRef(-1),
     boardViewport = useRef<HTMLDivElement>(null),
     me = room?.players.find((player) => player.id === seat?.playerId),
+    challenge = room?.phase === "active" ? (room.challenge ?? null) : null,
+    // A rejected word pauses the game, so nobody can move until it's settled.
     myTurn =
       room?.phase === "active" &&
       seat !== null &&
+      challenge === null &&
       room.currentPlayerId === seat.playerId,
     currentName =
       room?.players.find((player) => player.id === room.currentPlayerId)
@@ -288,6 +408,21 @@ export function OnlineGame({
       return analyzePlay(room.board as Cell[][], placed);
     }, [draft, room, seat?.rack]),
     keys = useBoardKeys(room?.settings.boardSize ?? 15);
+  const { voice, session: voiceSession } = useVoice({
+      enabled: room?.settings.voice === true && me !== undefined && !me.left,
+      roomCode: room?.roomCode ?? null,
+      selfId: seat?.playerId ?? null,
+      send: (message) => {
+        if (socket.current?.readyState !== WebSocket.OPEN) return false;
+        socket.current.send(JSON.stringify(message));
+        return true;
+      },
+    }),
+    nowSpeaking = speakingText(
+      voice,
+      room?.players ?? [],
+      seat?.playerId ?? null,
+    );
   usePinchZoom(boardViewport, cellSize, setCellSize, room?.phase === "active");
   const fitBoard = useCallback(() => {
     if (room)
@@ -338,13 +473,58 @@ export function OnlineGame({
       active?.close();
     };
   }, []);
+  // Mirror the tiles I am trying to the other players, throttled so dragging
+  // tiles around stays cheap. The server reads the letters from my rack.
+  const draftKey = JSON.stringify(
+    myTurn
+      ? draft.map(({ row, col, tileId, blankAs }) => ({
+          row,
+          col,
+          tileId,
+          ...(blankAs === undefined ? {} : { blankAs }),
+        }))
+      : [],
+  );
+  useEffect(() => {
+    if (!myTurn) return;
+    const timer = window.setTimeout(() => {
+      if (socket.current?.readyState !== WebSocket.OPEN) return;
+      socket.current.send(
+        `{"protocolVersion":1,"type":"game.draft","cells":${draftKey}}`,
+      );
+    }, 150);
+    return () => window.clearTimeout(timer);
+  }, [draftKey, myTurn]);
+  // Every player gets the same notifications, worked out from each change.
+  const { notices, push: pushNotices, dismiss: dismissNotice } = useNotices(),
+    previousRoom = useRef<PublicRoom | null>(null);
+  useEffect(() => {
+    if (!room) return;
+    const before = previousRoom.current;
+    previousRoom.current = room;
+    pushNotices(roomNotices(before, room, seat?.playerId ?? null));
+    if (
+      before?.phase === "active" &&
+      room.phase === "results" &&
+      room.endReason === "six-scoreless-turns"
+    )
+      setScorelessEnd(true);
+    // Listed on this device so the game can be opened again later.
+    if (room.phase === "results" && before?.phase !== "results")
+      rememberGame(summarizeRoom(room, endedAt(room)));
+    if (
+      room.challenge &&
+      room.challenge.playerId === seat?.playerId &&
+      before?.challenge === null
+    )
+      sounds.play("error");
+  }, [room]);
   // Once the turn moves on, unplayed tiles go back to the rack.
   useEffect(() => {
     if (myTurn) return;
     setDraft([]);
     setSelected(null);
-    setExchangeMode(false);
-    setExchangeIds([]);
+    setExchanging(false);
     setDraftError(null);
   }, [myTurn]);
   // A locked or full room can open up again; check every few seconds.
@@ -356,11 +536,13 @@ export function OnlineGame({
     }, 5000);
     return () => window.clearInterval(timer);
   }, [gateReason, code]);
+  const clockDeadline = room?.challenge?.deadline ?? room?.turnDeadline;
   useEffect(() => {
-    if (!room?.turnDeadline) return;
+    if (!clockDeadline) return;
+    setNow(Date.now());
     const timer = window.setInterval(() => setNow(Date.now()), 250);
     return () => window.clearInterval(timer);
-  }, [room?.turnDeadline]);
+  }, [clockDeadline]);
   useEffect(() => {
     if (
       room?.phase === "active" &&
@@ -415,11 +597,15 @@ export function OnlineGame({
       setClosed(null);
       setLinkDown(null);
       setStatus("");
+      // The server keeps voice state per socket; tell the new one.
+      voiceSession.current?.resync();
     };
     ws.onclose = (event) => {
       if (socket.current !== ws) return;
       socket.current = null;
       if (FINAL_CLOSES.has(event.code)) {
+        // Another tab or a closed room: this tab must not keep the mic.
+        voiceSession.current?.leave(event.code !== 4001);
         if (event.code !== 4001) {
           sessionStorage.removeItem(`scrabble.room.${roomCode}`);
           setRoom(null);
@@ -455,6 +641,10 @@ export function OnlineGame({
     ws.onmessage = (event) => {
       try {
         const message: unknown = JSON.parse(String(event.data));
+        if (isVoiceMessage(message)) {
+          voiceSession.current?.handle(message);
+          return;
+        }
         if (!isServerMessage(message)) throw new Error("Invalid message.");
         if (message.type === "room.snapshot") {
           if (
@@ -463,6 +653,7 @@ export function OnlineGame({
           ) {
             setDraft([]);
             setDraftError(null);
+            setGhost(null);
             lastAction.current = null;
           }
           revision.current = message.room.revision;
@@ -478,6 +669,7 @@ export function OnlineGame({
           lastAction.current = null;
         }
         if (message.type === "game.pending") setStatus("Checking every word…");
+        if (message.type === "game.draft") setGhost(message);
       } catch {
         setStatus("Received an invalid server message.");
       }
@@ -502,7 +694,6 @@ export function OnlineGame({
     kind: "create" | "join",
     settings?: RoomSettings,
     roomCode = code,
-    beforeConnect?: (roomCode: string) => void,
   ) {
     setStatus(kind === "create" ? "Creating your room…" : "Joining…");
     setBusy(true);
@@ -550,7 +741,6 @@ export function OnlineGame({
       setStatus("The server returned an invalid room state.");
       return;
     }
-    beforeConnect?.(result.roomCode);
     revision.current = -1;
     retries.current = 0;
     stopped.current = false;
@@ -562,15 +752,6 @@ export function OnlineGame({
     history.replaceState(null, "", `?room=${result.roomCode}`);
     connect(result.roomCode, result.token);
   }
-  /** Detaches from the current room without marking the seat as left. */
-  function detach() {
-    if (reconnectTimer.current !== null)
-      window.clearTimeout(reconnectTimer.current);
-    const previous = socket.current;
-    socket.current = null;
-    sessionStorage.removeItem(`scrabble.room.${code}`);
-    return previous;
-  }
   function exitRoom() {
     if (room && socket.current?.readyState === WebSocket.OPEN)
       send("room.leave");
@@ -580,29 +761,6 @@ export function OnlineGame({
     socket.current = null;
     history.replaceState(null, "", location.pathname);
     onExit();
-  }
-  function rematch() {
-    if (!room) return;
-    const finished = room;
-    void enter("create", finished.settings, code, (newCode) => {
-      // Tell everyone still on the results screen where the rematch is.
-      const previous = detach();
-      if (previous?.readyState === WebSocket.OPEN)
-        previous.send(
-          JSON.stringify({
-            protocolVersion: 1,
-            type: "room.rematch",
-            actionId: crypto.randomUUID(),
-            revision: finished.revision,
-            roomCode: newCode,
-          }),
-        );
-      previous?.close(1000, "Started a rematch.");
-    });
-  }
-  function joinRematch(target: string) {
-    setCode(target);
-    void enter("join", undefined, target, () => detach()?.close(1000));
   }
   const inviteUrl = () =>
     `${location.origin}${location.pathname}?room=${room?.roomCode ?? code}`;
@@ -836,64 +994,134 @@ export function OnlineGame({
         </section>
       </main>
     );
-  const board = room.board as Cell[][];
+  const board = room.board as Cell[][],
+    moves: HistoryMove[] = (room.history ?? []).map((move) => ({
+      ...move,
+      player: room.players.findIndex((player) => player.id === move.playerId),
+      name:
+        room.players.find((player) => player.id === move.playerId)?.nickname ??
+        "Player",
+    }));
+  const hostPlayer = room.players.find((player) => player.host),
+    challengeMine = challenge?.playerId === seat?.playerId,
+    challengeView: ChallengeView | null = challenge
+      ? {
+          stage: challenge.stage,
+          rejected: challenge.rejected,
+          playerName: challengeMine
+            ? "You"
+            : (room.players.find((player) => player.id === challenge.playerId)
+                ?.nickname ?? "A player"),
+          ruler: me?.host
+            ? "you (as host)"
+            : `${hostPlayer?.nickname ?? "the host"} (host)`,
+          deadline: challenge.deadline,
+          challengesLeft: challenge.challengesLeft,
+        }
+      : null;
+  // Only the current player's squares, and only while I am watching.
+  const ghostCells = new Map(
+    ghost && !myTurn && ghost.playerId === room.currentPlayerId
+      ? ghost.cells.map((item) => [`${item.row}:${item.col}`, item])
+      : [],
+  );
   if (room.phase === "results") {
-    const ranking = [...room.players].sort((a, b) => b.score - a.score);
+    const summary = summarizeRoom(room, endedAt(room)),
+      endNote =
+        room.endReason === "room-time-limit"
+          ? "Room time limit reached, so these scores are provisional."
+          : room.endReason === "players-left"
+            ? "Everyone else left, so the game ended early with the scores as they stood."
+            : room.endReason === "ended-early"
+              ? "The host ended the game early. Each player lost the value of the tiles they still held."
+              : room.endReason === "six-scoreless-turns"
+                ? "Finished after six scoreless turns."
+                : "Finished when a player emptied their rack.";
     return (
-      <main className="shell results">
-        <section className="card">
-          <p className="eyebrow">Online game complete</p>
-          <h1>{ranking[0]?.nickname} wins!</h1>
-          <p>
-            {room.endReason === "room-time-limit"
-              ? "Room time limit reached, so these scores are provisional."
-              : room.endReason === "players-left"
-                ? "Everyone else left, so the game ended early with the scores as they stood."
-                : room.endReason === "six-scoreless-turns"
-                  ? "Finished after six scoreless turns."
-                  : "Finished when a player emptied their rack."}
-          </p>
-          <div className="standings">
-            {ranking.map((player, index) => (
-              <div key={player.id}>
-                <span>{index + 1}</span>
-                <b>
-                  {player.nickname}
-                  {player.left ? " · Left" : ""}
-                </b>
-                <strong>{player.score}</strong>
-                <small>points</small>
-              </div>
-            ))}
-          </div>
-          {room.rematchCode ? (
-            <>
-              <p className="notice">
-                A rematch room ({room.rematchCode}) is ready.
-              </p>
-              <button
-                className="primary wide"
-                onClick={() => joinRematch(room.rematchCode ?? "")}
-              >
-                Join the rematch
-              </button>
-            </>
-          ) : (
-            <button className="primary wide" onClick={rematch}>
-              Create a rematch room
+      <>
+        <ResultsPage
+          eyebrow={`Online game ${room.roomCode} complete`}
+          title={winnerTitle(summary)}
+          note={<p>{endNote}</p>}
+          summary={summary}
+          self={me?.nickname}
+          before={
+            <VoicePanel
+              voice={voice}
+              session={voiceSession.current}
+              players={room.players}
+              selfId={seat?.playerId ?? null}
+            />
+          }
+        >
+          {canReplay(moves) && (
+            <button
+              className="secondary wide"
+              onClick={() => setShowReplay(true)}
+            >
+              Replay the game
             </button>
           )}
+          <button
+            className="secondary wide"
+            onClick={() => {
+              navigator.clipboard.writeText(summaryLink(room.roomCode)).then(
+                () =>
+                  setStatus(
+                    "Summary link copied. It keeps working for 180 days, after the room closes.",
+                  ),
+                () => setStatus(`Summary link: ${summaryLink(room.roomCode)}`),
+              );
+            }}
+          >
+            Copy link to this summary
+          </button>
           <p role="status">{status}</p>
           <button className="secondary wide" onClick={exitRoom}>
             Exit room
           </button>
-        </section>
-      </main>
+        </ResultsPage>
+        <NoticeStack notices={notices} onDismiss={dismissNotice} />
+        {showReplay && (
+          <ReplayDialog
+            boardSize={room.settings.boardSize}
+            premiums={board.map((row) => row.map((cell) => cell.premium))}
+            players={room.players.map((player) => ({
+              name: player.nickname,
+              finalScore: player.score,
+            }))}
+            moves={moves}
+            startedAt={room.startedAt}
+            endNote={endNote}
+            onClose={() => setShowReplay(false)}
+          />
+        )}
+        {scorelessEnd && (
+          <ScorelessEndDialog
+            turns={moves.slice(-6).map((move) => ({
+              name:
+                room.players[move.player]?.id === seat?.playerId
+                  ? "You"
+                  : move.name,
+              move,
+            }))}
+            players={room.players.map((player, index) => ({
+              name: player.nickname,
+              moveTotal: moves
+                .filter((move) => move.player === index)
+                .reduce((sum, move) => sum + move.score, 0),
+              final: player.score,
+            }))}
+            onOk={() => setScorelessEnd(false)}
+          />
+        )}
+      </>
     );
   }
   if (room.phase === "lobby") {
     const host = room.players.find((player) => player.host);
-    const open = room.settings.capacity - room.players.length;
+    const seats = seatsFor(room.settings.capacity, room.settings.boardSize),
+      open = seats - room.players.length;
     const startBlocker =
       room.players.length < 2
         ? "Waiting for at least one more player to join. Share the invite link above."
@@ -903,6 +1131,17 @@ export function OnlineGame({
         <section className="card">
           <p className="eyebrow">Room {room.roomCode}</p>
           <h1>Gather your players</h1>
+          <p className="room-settings-line">
+            <span>{settingsText(room.settings)}</span>
+            {me?.host && (
+              <button
+                className="link-button"
+                onClick={() => setEditingSettings(true)}
+              >
+                Change settings
+              </button>
+            )}
+          </p>
           <section className="invite" aria-label="Invite link">
             <div className="invite-row">
               <input
@@ -932,9 +1171,9 @@ export function OnlineGame({
               ) : open > 0 ? (
                 <>
                   Send this link by text, chat or email. Friends can also join
-                  with code <b>{room.roomCode}</b>. {open} of{" "}
-                  {room.settings.capacity} seats open; the room closes 30
-                  minutes after it was created if the game has not started.
+                  with code <b>{room.roomCode}</b>. {open} of {seats} seats
+                  open; the room closes 30 minutes after it was created if the
+                  game has not started.
                 </>
               ) : (
                 <>Every seat is taken. The host can start the game.</>
@@ -943,16 +1182,26 @@ export function OnlineGame({
           </section>
           <div className="roster">
             {room.players.map((player) => (
-              <div className="player" key={player.id}>
+              <div
+                className={`player ${voice?.speaking.has(player.id) ? "speaking" : ""}`}
+                key={player.id}
+              >
                 <span>{player.nickname[0]}</span>
                 <b>
                   {player.nickname}
                   {player.host ? " · Host" : ""}
+                  <VoiceBadge voice={voice} playerId={player.id} />
                 </b>
                 <small>{player.connected ? "Here" : "Offline"}</small>
               </div>
             ))}
           </div>
+          <VoicePanel
+            voice={voice}
+            session={voiceSession.current}
+            players={room.players}
+            selfId={seat?.playerId ?? null}
+          />
           <div className="lobby-actions">
             {me?.host ? (
               <div className="hinted">
@@ -977,6 +1226,26 @@ export function OnlineGame({
                 <small>
                   Only the host, {host?.nickname ?? "who created the room"}, can
                   start. The board appears here as soon as they do.
+                </small>
+              </div>
+            )}
+            {me?.host && (
+              <div className="hinted">
+                <button
+                  className="secondary"
+                  aria-pressed={room.settings.voice === true}
+                  onClick={() =>
+                    send("room.voice", {
+                      enabled: room.settings.voice !== true,
+                    })
+                  }
+                >
+                  {room.settings.voice ? "Turn voice off" : "Turn voice on"}
+                </button>
+                <small>
+                  {room.settings.voice
+                    ? "Ends the call for everyone. You can turn it back on later."
+                    : "Lets players talk live. Each one chooses to join."}
                 </small>
               </div>
             )}
@@ -1009,6 +1278,29 @@ export function OnlineGame({
           </div>
           <p role="status">{status}</p>
         </section>
+        {/* After the card: .setup sizes the card only as its first child. */}
+        <NoticeStack notices={notices} onDismiss={dismissNotice} />
+        {editingSettings && me?.host && (
+          <RoomSettingsDialog
+            settings={room.settings}
+            players={room.players.length}
+            onClose={() => setEditingSettings(false)}
+            onSave={(next) => {
+              const { boardSize, capacity, timerSeconds } = next;
+              if (
+                boardSize !== room.settings.boardSize ||
+                capacity !== room.settings.capacity ||
+                timerSeconds !== room.settings.timerSeconds
+              )
+                send("room.settings", {
+                  settings: { boardSize, capacity, timerSeconds },
+                });
+              if ((next.voice === true) !== (room.settings.voice === true))
+                send("room.voice", { enabled: next.voice === true });
+              setEditingSettings(false);
+            }}
+          />
+        )}
       </main>
     );
   }
@@ -1017,24 +1309,66 @@ export function OnlineGame({
       <h1 className="sr-only">Scrabble online game board</h1>
       <header>
         <b>Room {room.roomCode}</b>
-        <div className="scores">
+        <div
+          className={`scores${room.players.length > 4 ? " crowded" : ""}`}
+          tabIndex={room.players.length > 4 ? 0 : undefined}
+          aria-label="Scores"
+        >
           {room.players.map((player) => (
-            <span key={player.id} className={player.left ? "left" : undefined}>
+            <span
+              key={player.id}
+              className={`${player.left ? "left" : ""} ${voice?.speaking.has(player.id) ? "speaking" : ""}`}
+            >
               {player.nickname} <strong>{player.score}</strong>
+              <VoiceBadge voice={voice} playerId={player.id} />
             </span>
           ))}
         </div>
+        {voice?.blocked ? (
+          <button
+            className="voice-unblock"
+            onClick={() => voiceSession.current?.unblock()}
+          >
+            Tap to hear voices
+          </button>
+        ) : (
+          voice && (
+            <span className="voice-now" aria-hidden={!nowSpeaking}>
+              {nowSpeaking ?? ""}
+            </span>
+          )
+        )}
         <button
           className="help-button"
-          aria-label="Rules and dictionary"
-          title="Rules and dictionary"
+          aria-label="Rules of play"
+          title="Rules of play"
           onClick={() => setShowRules(true)}
         >
           ?
         </button>
+        {me?.host && (
+          <button
+            className="end-game-button"
+            onClick={() => setConfirmEnd(true)}
+          >
+            End game
+          </button>
+        )}
         <button onClick={exitRoom}>Exit</button>
       </header>
+      <NoticeStack notices={notices} onDismiss={dismissNotice} />
       <div className="online-board-scroll" ref={boardViewport}>
+        {/* The host's ruling popup already shows all of this. */}
+        {challengeView && !(challenge?.stage === "review" && me?.host) && (
+          <ChallengeNotice
+            view={challengeView}
+            mine={challengeMine}
+            now={now}
+            variant="board"
+            onAccept={() => send("game.accept")}
+            onChallenge={() => send("game.challenge")}
+          />
+        )}
         {draftError && draft.length > 0 && (
           <div className="board-error" role="alert">
             <button
@@ -1101,11 +1435,12 @@ export function OnlineGame({
                     : null),
                 letter = cell.tile
                   ? (cell.tile.blankAs ?? cell.tile.letter)
-                  : (pending?.blankAs ?? tile?.letter ?? null);
+                  : (pending?.blankAs ?? tile?.letter ?? null),
+                trying = tile ? undefined : ghostCells.get(`${r}:${c}`);
               return (
                 <button
                   key={`${r}:${c}`}
-                  className={`cell ${cell.premium?.toLowerCase() ?? ""} ${starts.has(`${r}:${c}`) ? "start" : ""} ${pending ? "pending" : ""} ${pending && draftError ? "invalid" : ""}`}
+                  className={`cell ${cell.premium?.toLowerCase() ?? ""} ${starts.has(`${r}:${c}`) ? "start" : ""} ${pending ? "pending" : ""} ${pending && draftError ? "invalid" : ""} ${trying ? "ghost" : ""}`}
                   aria-invalid={pending && draftError ? true : undefined}
                   aria-disabled={cell.tile !== null || !myTurn || undefined}
                   data-row={r}
@@ -1113,12 +1448,14 @@ export function OnlineGame({
                   tabIndex={keys.tabIndexFor(r, c)}
                   aria-label={`Row ${r + 1}, column ${c + 1}: ${
                     tile
-                      ? `${draftError && pending ? "invalid provisional tile " : pending ? "your provisional tile " : ""}${letter ?? "blank"}, ${tile.value} points`
-                      : starts.has(`${r}:${c}`)
-                        ? "start square"
-                        : cell.premium
-                          ? premiumName[cell.premium]
-                          : "empty"
+                      ? `${draftError && pending ? "invalid provisional tile " : pending ? "your provisional tile " : ""}${letter ?? "blank"}, ${tile.value} points${cell.premium ? `, on ${premiumName[cell.premium]}` : ""}`
+                      : trying
+                        ? `${currentName} is trying ${trying.blankAs ?? trying.letter ?? "a blank"} here`
+                        : starts.has(`${r}:${c}`)
+                          ? "start square"
+                          : cell.premium
+                            ? premiumName[cell.premium]
+                            : "empty"
                   }`}
                   onClick={() => activateCell(r, c)}
                   onDragOver={(event) => event.preventDefault()}
@@ -1130,6 +1467,16 @@ export function OnlineGame({
                     <>
                       <b>{letter}</b>
                       <small>{tile.value}</small>
+                      {cell.premium && (
+                        <i className="tile-bonus" aria-hidden="true">
+                          {cell.premium}
+                        </i>
+                      )}
+                    </>
+                  ) : trying ? (
+                    <>
+                      <b>{trying.blankAs ?? trying.letter ?? ""}</b>
+                      <small>{trying.value}</small>
                     </>
                   ) : starts.has(`${r}:${c}`) ? (
                     <span className="start-star" aria-hidden="true">
@@ -1143,6 +1490,7 @@ export function OnlineGame({
             }),
           )}
         </div>
+        <BoardLegend />
       </div>
       <aside className="online-side">
         <div
@@ -1152,46 +1500,80 @@ export function OnlineGame({
         >
           <div>
             <b aria-live="polite">
-              {myTurn ? "Your turn" : `${currentName} is playing`}
+              {challenge
+                ? "Paused for a rejected word"
+                : myTurn
+                  ? "Your turn"
+                  : `${currentName} is playing`}
             </b>
             <small>
-              {myTurn
-                ? room.turnDeadline === null
-                  ? "Place tiles on the board, then Play."
-                  : "Play before the clock runs out."
-                : "Your letters unlock on your turn."}
+              {challenge
+                ? challenge.stage === "decide"
+                  ? `${challengeView?.playerName ?? "The player"} can accept or challenge.`
+                  : `Waiting for ${challengeView?.ruler ?? "the host"} to rule.`
+                : myTurn
+                  ? room.turnDeadline === null
+                    ? "Place tiles on the board, then Play."
+                    : "Play before the clock runs out."
+                  : ghostCells.size
+                    ? `${currentName} is placing ${ghostCells.size} tile${ghostCells.size === 1 ? "" : "s"}…`
+                    : "Your letters unlock on your turn."}
             </small>
           </div>
-          <strong>
+          <strong
+            title={
+              room.turnDeadline === null
+                ? "No time limit: the host turned the turn timer off"
+                : "Time left in this turn"
+            }
+          >
             {room.turnDeadline === null
               ? "∞"
               : formatClock((room.turnDeadline - now) / 1000)}
           </strong>
-          <button
-            onClick={sounds.toggleMuted}
-            aria-pressed={sounds.muted}
-            aria-label={sounds.muted ? "Turn sounds on" : "Mute game sounds"}
-            title={sounds.muted ? "Turn sounds on" : "Mute game sounds"}
-          >
-            {sounds.muted ? "🔇" : "🔊"}
-          </button>
+          <SoundControls
+            voice={voice}
+            session={voiceSession.current}
+            sounds={sounds}
+            players={room.players}
+            selfId={seat?.playerId ?? null}
+            onHostVoice={
+              me?.host
+                ? (enabled) => send("room.voice", { enabled })
+                : undefined
+            }
+          />
         </div>
+        {!challenge && <ScorelessWarning count={room.scorelessTurns ?? 0} />}
         <LastPlay
           name={
             room.players.find((player) => player.id === room.lastMove?.playerId)
               ?.nickname ?? null
           }
           move={room.lastMove}
+          onHistory={() => setShowHistory(true)}
         />
-        {status && (
-          <p className="status" role="status">
-            {status}
-            {!closed && linkDown && (
-              <button className="link-button" onClick={reconnectNow}>
-                {linkDown === "gave-up" ? "Try again" : "Reconnect now"}
-              </button>
-            )}
-          </p>
+        {challengeView ? (
+          // The same notice as on the board, buttons included.
+          <ChallengeNotice
+            view={challengeView}
+            mine={challengeMine}
+            now={now}
+            variant="side"
+            onAccept={() => send("game.accept")}
+            onChallenge={() => send("game.challenge")}
+          />
+        ) : (
+          status && (
+            <p className="status" role="status">
+              {status}
+              {!closed && linkDown && (
+                <button className="link-button" onClick={reconnectNow}>
+                  {linkDown === "gave-up" ? "Try again" : "Reconnect now"}
+                </button>
+              )}
+            </p>
+          )
         )}
         <div
           className={`rack ${myTurn ? "" : "waiting"}`}
@@ -1204,25 +1586,15 @@ export function OnlineGame({
             return (
               <button
                 key={tile.id}
-                className={
-                  selected === tile.id || exchangeIds.includes(tile.id)
-                    ? "active"
-                    : ""
-                }
+                className={selected === tile.id ? "active" : ""}
                 disabled={used || !myTurn}
-                draggable={myTurn && !used && !exchangeMode}
+                draggable={myTurn && !used}
                 onDragStart={(event) =>
                   event.dataTransfer.setData("text/tile-id", tile.id)
                 }
-                onClick={() => {
-                  if (exchangeMode)
-                    setExchangeIds(
-                      exchangeIds.includes(tile.id)
-                        ? exchangeIds.filter((id) => id !== tile.id)
-                        : [...exchangeIds, tile.id],
-                    );
-                  else setSelected(selected === tile.id ? null : tile.id);
-                }}
+                onClick={() =>
+                  setSelected(selected === tile.id ? null : tile.id)
+                }
               >
                 <b>{tile.letter ?? "□"}</b>
                 <small>{tile.value}</small>
@@ -1231,53 +1603,29 @@ export function OnlineGame({
           })}
         </div>
         <ScorePreview analysis={preview} />
-        {exchangeMode ? (
-          <div className="actions">
-            <button
-              className="secondary"
-              onClick={() => {
-                setExchangeMode(false);
-                setExchangeIds([]);
-              }}
-            >
-              Cancel
-            </button>
-            <button
-              className="primary"
-              disabled={!exchangeIds.length || !myTurn}
-              onClick={() => {
-                setConfirmExchange(true);
-                sounds.play("warning");
-              }}
-            >
-              Exchange {exchangeIds.length}
-            </button>
-          </div>
-        ) : (
-          <div className="actions">
-            <button
-              className="secondary"
-              disabled={!draft.length || !myTurn}
-              onClick={() => {
-                setDraft((placements) => recallLast(placements));
-                setDraftError(null);
-                setStatus("Last tile returned to your rack.");
-              }}
-              aria-label="Recall last placed tile"
-            >
-              Recall
-            </button>
-            <button
-              className="primary"
-              disabled={!draft.length || !myTurn}
-              onClick={() => {
-                send("game.play", { placements: draft });
-              }}
-            >
-              Play
-            </button>
-          </div>
-        )}
+        <div className="actions">
+          <button
+            className="secondary"
+            disabled={!draft.length || !myTurn}
+            onClick={() => {
+              setDraft((placements) => recallLast(placements));
+              setDraftError(null);
+              setStatus("Last tile returned to your rack.");
+            }}
+            aria-label="Recall last placed tile"
+          >
+            Recall
+          </button>
+          <button
+            className="primary"
+            disabled={!draft.length || !myTurn}
+            onClick={() => {
+              send("game.play", { placements: draft });
+            }}
+          >
+            Play
+          </button>
+        </div>
         <div className="minor">
           <button
             onClick={() =>
@@ -1291,12 +1639,10 @@ export function OnlineGame({
             Shuffle
           </button>
           <button
-            disabled={!myTurn || exchangeMode}
+            disabled={!myTurn}
             onClick={() => {
-              setExchangeMode(true);
-              setExchangeIds([]);
-              setSelected(null);
-              setDraft([]);
+              setExchanging(true);
+              sounds.play("warning");
             }}
           >
             Exchange
@@ -1359,9 +1705,7 @@ export function OnlineGame({
           >
             {room.players.map((player) => (
               <div
-                className={
-                  player.id === room.currentPlayerId ? "active" : undefined
-                }
+                className={`${player.id === room.currentPlayerId ? "active" : ""} ${voice?.speaking.has(player.id) ? "speaking" : ""}`}
                 key={player.id}
               >
                 <span aria-hidden="true">
@@ -1376,6 +1720,7 @@ export function OnlineGame({
                       : player.connected
                         ? ""
                         : " · Offline"}
+                  <VoiceBadge voice={voice} playerId={player.id} />
                 </b>
                 <strong>{player.score}</strong>
                 <small>pts</small>
@@ -1385,7 +1730,31 @@ export function OnlineGame({
         </section>
         <small className="side-hint">Words are checked with WordSoHard.</small>
       </aside>
-      {showRules && <RulesDialog onClose={() => setShowRules(false)} />}
+      {showRules && (
+        <RulesDialog mode="online" onClose={() => setShowRules(false)} />
+      )}
+      {challenge &&
+        challengeView &&
+        challenge.stage === "review" &&
+        me?.host && (
+          <ChallengeReview
+            view={challengeView}
+            words={challenge.words}
+            score={challenge.score}
+            board={board}
+            placed={challenge.placed}
+            now={now}
+            onApprove={() => send("game.rule", { approve: true })}
+            onReject={() => send("game.rule", { approve: false })}
+          />
+        )}
+      {showHistory && (
+        <HistoryDialog
+          moves={moves}
+          startedAt={room.startedAt}
+          onClose={() => setShowHistory(false)}
+        />
+      )}
       {blankTarget && (
         <div
           className="overlay"
@@ -1417,33 +1786,48 @@ export function OnlineGame({
           </div>
         </div>
       )}
-      {confirmExchange && (
+      {exchanging && seat && (
+        <ExchangeDialog
+          rack={seat.rack}
+          bagCount={room.bagRemaining}
+          onCancel={() => setExchanging(false)}
+          onConfirm={(tileIds) => {
+            send("game.exchange", { tileIds });
+            setExchanging(false);
+            setDraft([]);
+            setSelected(null);
+          }}
+        />
+      )}
+      {confirmEnd && (
         <div
           className="overlay"
           role="dialog"
           aria-modal="true"
-          aria-label="Confirm exchange"
+          aria-label="Confirm ending the game"
         >
           <div>
-            <h2>Exchange {exchangeIds.length} selected tiles?</h2>
-            <p>This uses your turn and counts as a scoreless move.</p>
+            <h2>End the game now?</h2>
+            <p>
+              Use this when everyone agrees to stop. Each player loses the value
+              of the tiles they still hold, and the highest score wins.
+            </p>
             <div className="actions">
               <button
                 className="secondary"
-                onClick={() => setConfirmExchange(false)}
+                autoFocus
+                onClick={() => setConfirmEnd(false)}
               >
-                Keep tiles
+                Keep playing
               </button>
               <button
                 className="danger"
                 onClick={() => {
-                  send("game.exchange", { tileIds: exchangeIds });
-                  setConfirmExchange(false);
-                  setExchangeMode(false);
-                  setExchangeIds([]);
+                  send("game.end");
+                  setConfirmEnd(false);
                 }}
               >
-                Exchange tiles
+                End game
               </button>
             </div>
           </div>
@@ -1458,7 +1842,7 @@ export function OnlineGame({
         >
           <div>
             <h2>Pass this turn?</h2>
-            <p>This counts as a scoreless turn.</p>
+            <p>You score 0 and play moves to the next player.</p>
             <div className="actions">
               <button
                 className="secondary"

@@ -123,6 +123,8 @@ export type ActivityRow = {
   best_score: number | null;
   best_by: string | null;
   plays: number;
+  /** When an admin hid the room from the rooms list; null if shown. */
+  archived_at: number | null;
 };
 // eslint-disable-next-line @typescript-eslint/consistent-type-definitions
 export type GameRow = {
@@ -141,6 +143,8 @@ export type GameRow = {
   best_word: string | null;
   best_score: number | null;
   best_by: string | null;
+  /** 1 when the summaries table has this game; set by the overview query. */
+  has_summary?: number;
 };
 
 export function adminRoom(row: ActivityRow): AdminRoom {
@@ -165,11 +169,13 @@ export function adminRoom(row: ActivityRow): AdminRoom {
     closedAt: row.closed_at,
     updatedAt: row.updated_at,
     endReason: row.end_reason,
+    archived: (row.archived_at ?? null) !== null,
   };
 }
 
 export function adminGame(row: GameRow): AdminGame {
   return {
+    id: row.room_id,
     roomCode: row.code,
     startedAt: row.started_at,
     endedAt: row.ended_at,
@@ -185,6 +191,7 @@ export function adminGame(row: GameRow): AdminGame {
       row.best_word === null || row.best_score === null
         ? null
         : { word: row.best_word, score: row.best_score, by: row.best_by ?? "" },
+    hasSummary: row.has_summary === 1,
   };
 }
 
@@ -256,7 +263,6 @@ export function roomLive(
         ?.nickname ?? null,
     turnDeadline: view.turnDeadline,
     expiresAt: view.expiresAt,
-    rematchCode: view.rematchCode,
     connections,
   };
 }
@@ -291,5 +297,6 @@ export function activityFromLive(snapshot: AdminLiveSnapshot): ActivityRow {
     best_score: null,
     best_by: null,
     plays: snapshot.live.moves.filter((move) => move.kind === "play").length,
+    archived_at: null,
   };
 }

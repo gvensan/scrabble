@@ -128,3 +128,60 @@ export async function validateWithWordSoHard(
       : "Dictionary unavailable.",
   );
 }
+
+const definitionSchema = z.object({
+  found: z.boolean().optional(),
+  definitions: z
+    .array(
+      z.object({
+        partOfSpeech: z.string().nullable().optional(),
+        definition: z.string(),
+      }),
+    )
+    .optional(),
+});
+export interface StoredMeaning {
+  partOfSpeech: string | null;
+  definition: string;
+}
+
+/**
+ * First meaning of each word, for a finished game's summary. Best effort:
+ * a word the dictionary can't define, or any failure, gives null, and the
+ * page looks it up again when shown. One request per word, in turn, keeps
+ * well inside WordSoHard's rate limit.
+ */
+export async function defineWords(
+  words: readonly string[],
+  fetcher: typeof fetch = fetch,
+): Promise<Record<string, StoredMeaning | null>> {
+  const meanings: Record<string, StoredMeaning | null> = {};
+  for (const word of words) {
+    meanings[word] = null;
+    if (!/^[A-Za-z]{2,30}$/.test(word)) continue;
+    try {
+      const response = await fetcher(
+        `https://wordsohard.com/api/v1/define/${encodeURIComponent(word.toLowerCase())}`,
+        {
+          headers: {
+            accept: "application/json",
+            "user-agent":
+              "Scrabble/1.0 (word game; https://github.com/gvensan/scrabble)",
+          },
+          signal: AbortSignal.timeout(4500),
+        },
+      );
+      if (!response.ok) continue;
+      const parsed = definitionSchema.parse(await response.json()),
+        first = parsed.found === false ? undefined : parsed.definitions?.[0];
+      if (first)
+        meanings[word] = {
+          partOfSpeech: first.partOfSpeech ?? null,
+          definition: first.definition.slice(0, 400),
+        };
+    } catch {
+      // Left null; the summary page can look it up later.
+    }
+  }
+  return meanings;
+}

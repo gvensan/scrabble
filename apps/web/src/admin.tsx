@@ -8,16 +8,35 @@ import type {
   AdminRoomDetail,
 } from "@scrabble/game-engine/protocol";
 import { api } from "./config.js";
+import type { GameSummary } from "@scrabble/game-engine";
+import { FinalBoard } from "./summary.js";
+
+/** The public leaderboard and moments page of a finished game. */
+const summaryHref = (code: string) => `${location.pathname}?game=${code}`;
+function SummaryLink({ code }: { code: string }) {
+  return (
+    <a
+      className="admin-summary-link"
+      href={summaryHref(code)}
+      target="_blank"
+      rel="noopener noreferrer"
+      title="Opens the leaderboard, moments and final board players see"
+    >
+      Leaderboard and moments ↗
+    </a>
+  );
+}
 
 const TOKEN_KEY = "scrabble.admin";
 const REFRESH_MS = 20_000;
-type Tab = "rooms" | "games" | "activity" | "players";
+type Tab = "rooms" | "games" | "players";
 
 const endReasons: Record<string, string> = {
   "rack-emptied": "Rack emptied",
   "six-scoreless-turns": "Six scoreless turns",
   "players-left": "Players left",
   "room-time-limit": "Room time limit",
+  "ended-early": "Ended early by host",
   abandoned: "Abandoned",
   finished: "Finished",
 };
@@ -26,16 +45,9 @@ const closeReasons: Record<string, string> = {
   expired: "Expired",
   abandoned: "Nobody connected",
 };
-const metricLabels: [string, string][] = [
-  ["rooms_created", "Rooms created"],
-  ["players_joined", "Players joined"],
-  ["games_started", "Games started"],
-  ["games_finished", "Games ended"],
-  ["plays", "Words played"],
-  ["words_rejected", "Words rejected"],
-  ["dictionary_errors", "Dictionary errors"],
-  ["rate_limited", "Rate limited"],
-];
+/** The Rooms tab lists rooms that are open right now. */
+const isOpen = (room: AdminRoom) =>
+  room.status === "lobby" || room.status === "active";
 
 function readToken() {
   try {
@@ -144,7 +156,8 @@ export function AdminPage() {
     [tab, setTab] = useState<Tab>("rooms"),
     [notice, setNotice] = useState(""),
     [openRoom, setOpenRoom] = useState<string | null>(null),
-    [roomNotice, setRoomNotice] = useState("");
+    [roomNotice, setRoomNotice] = useState(""),
+    [gameNotice, setGameNotice] = useState("");
 
   const signOut = useCallback((message = "") => {
     storeToken("");
@@ -292,12 +305,19 @@ export function AdminPage() {
       {data && (
         <>
           <Totals data={data} />
+          <RateLimits
+            data={data}
+            notice={notice}
+            onReset={() => void resetLimits()}
+          />
           <nav className="admin-tabs" aria-label="Admin sections">
             {(
               [
-                ["rooms", `Rooms (${data.rooms.length})`],
+                [
+                  "rooms",
+                  `Rooms (${data.rooms.filter((room) => isOpen(room) && !room.archived).length})`,
+                ],
                 ["games", `Past games (${data.games.length})`],
-                ["activity", "Activity"],
                 ["players", "Players"],
               ] as const
             ).map(([id, label]) => (
@@ -335,18 +355,28 @@ export function AdminPage() {
                 rooms={data.rooms}
                 now={data.generatedAt}
                 notice={roomNotice}
+                token={token}
                 onOpen={(code) => {
                   setRoomNotice("");
                   setOpenRoom(code);
                 }}
+                onChanged={(message) => {
+                  setRoomNotice(message);
+                  void load();
+                }}
+                onSignedOut={signOut}
               />
             ))}
-          {tab === "games" && <Games games={data.games} />}
-          {tab === "activity" && (
-            <Activity
-              data={data}
-              notice={notice}
-              onReset={() => void resetLimits()}
+          {tab === "games" && (
+            <Games
+              games={data.games}
+              token={token}
+              notice={gameNotice}
+              onChanged={(message) => {
+                setGameNotice(message);
+                void load();
+              }}
+              onSignedOut={signOut}
             />
           )}
           {tab === "players" && <Players data={data} />}
@@ -431,43 +461,206 @@ function PlayerList({
   );
 }
 
+type BulkAction = "archive" | "unarchive" | "delete";
+const bulkLabel: Record<BulkAction, string> = {
+  archive: "Archive",
+  unarchive: "Unarchive",
+  delete: "Delete",
+};
+
 function Rooms({
   rooms,
   now,
   notice,
+  token,
   onOpen,
+  onChanged,
+  onSignedOut,
 }: {
   rooms: AdminRoom[];
   now: number;
   notice: string;
+  token: string;
   onOpen: (code: string) => void;
+  /** After a bulk action: reports the outcome and reloads. */
+  onChanged: (message: string) => void;
+  onSignedOut: (message: string) => void;
 }) {
-  const [showClosed, setShowClosed] = useState(false);
-  const shown = rooms.filter((room) => showClosed || room.status !== "closed");
+  const [status, setStatus] = useState<"all" | "lobby" | "active">("all"),
+    [showArchived, setShowArchived] = useState(false),
+    [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set()),
+    [action, setAction] = useState<BulkAction | "">(""),
+    [confirmDelete, setConfirmDelete] = useState(false),
+    [working, setWorking] = useState(false),
+    [failure, setFailure] = useState("");
+  const shown = rooms.filter(
+      (room) =>
+        isOpen(room) &&
+        (status === "all" || room.status === status) &&
+        (showArchived || !room.archived),
+    ),
+    // Actions only ever apply to rows that are on screen.
+    chosen = shown.filter((room) => selected.has(room.roomCode)),
+    allChosen = shown.length > 0 && chosen.length === shown.length,
+    live = chosen.length;
+  const toggle = (code: string, on: boolean) => {
+    const next = new Set(selected);
+    if (on) next.add(code);
+    else next.delete(code);
+    setSelected(next);
+  };
+  async function run(kind: BulkAction) {
+    const codes = chosen.map((room) => room.roomCode);
+    setWorking(true);
+    setFailure("");
+    try {
+      const response = await fetch(`${api}/api/admin/rooms/bulk`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${token}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ action: kind, codes }),
+        }),
+        body = (await response.json()) as {
+          done?: string[];
+          missing?: string[];
+          error?: string;
+        };
+      if (response.status === 401) {
+        onSignedOut(body.error ?? "Sign in again.");
+        return;
+      }
+      if (!response.ok) {
+        setFailure(body.error ?? "The action failed.");
+        return;
+      }
+      const done = body.done?.length ?? 0,
+        verb =
+          kind === "delete"
+            ? "deleted"
+            : kind === "archive"
+              ? "archived"
+              : "restored to the list";
+      setSelected(new Set());
+      onChanged(
+        `${done} room${done === 1 ? "" : "s"} ${verb}.${body.missing?.length ? ` Not found: ${body.missing.join(", ")}.` : ""}`,
+      );
+    } catch {
+      setFailure("Could not reach the game server.");
+    } finally {
+      setWorking(false);
+      setAction("");
+      setConfirmDelete(false);
+    }
+  }
   return (
     <section className="admin-panel">
       <div className="admin-panel-head">
         <p>
-          Open rooms, newest activity first. Select a room for its players,
-          words and scores, or to delete it. Closed rooms from the last 24 hours
-          are kept for reference.
+          Rooms open right now (lobbies and games in play), newest activity
+          first. Select a room for its players, words and scores, or tick
+          several to archive or delete them together. Archiving only hides a
+          room from this list. Finished games move to Past games.
         </p>
+        <label className="admin-toggle admin-filter">
+          Status
+          <select
+            value={status}
+            onChange={(event) =>
+              setStatus(event.target.value as "all" | "lobby" | "active")
+            }
+          >
+            <option value="all">All open</option>
+            <option value="lobby">Lobby</option>
+            <option value="active">In play</option>
+          </select>
+        </label>
         <label className="admin-toggle">
           <input
             type="checkbox"
-            checked={showClosed}
-            onChange={(event) => setShowClosed(event.target.checked)}
+            checked={showArchived}
+            onChange={(event) => setShowArchived(event.target.checked)}
           />
-          Show closed
+          Show archived
         </label>
       </div>
-      {notice && (
+      <div
+        className="admin-bulk"
+        role="group"
+        aria-label="Actions for selected rooms"
+      >
+        <span>
+          {chosen.length
+            ? `${chosen.length} selected`
+            : "Tick rooms to act on them"}
+        </span>
+        <select
+          aria-label="Action for selected rooms"
+          value={action}
+          disabled={!chosen.length || working}
+          onChange={(event) => {
+            const value = event.target.value as BulkAction | "";
+            setAction(value);
+            setConfirmDelete(false);
+            if (value === "delete") setConfirmDelete(true);
+            else if (value) void run(value);
+          }}
+        >
+          <option value="">Actions…</option>
+          <option value="archive">Archive</option>
+          {showArchived && <option value="unarchive">Unarchive</option>}
+          <option value="delete">Delete</option>
+        </select>
+        {working && action && <small>{bulkLabel[action]}…</small>}
+      </div>
+      {confirmDelete && (
+        <div
+          className="admin-confirm"
+          role="group"
+          aria-label="Confirm bulk delete"
+        >
+          <p>
+            Delete <b>{chosen.length}</b> room{chosen.length === 1 ? "" : "s"}?
+            Everyone in {live === 1 ? "it is" : "them is"} disconnected and told
+            the room is gone. Every trace of their games is removed, including
+            past games, leaderboard totals and summary pages. This cannot be
+            undone.
+          </p>
+          <div>
+            <button
+              className="secondary"
+              disabled={working}
+              onClick={() => {
+                setConfirmDelete(false);
+                setAction("");
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              className="danger"
+              disabled={working}
+              onClick={() => void run("delete")}
+            >
+              {working
+                ? "Deleting…"
+                : `Yes, delete ${chosen.length} room${chosen.length === 1 ? "" : "s"}`}
+            </button>
+          </div>
+        </div>
+      )}
+      {(failure || notice) && (
         <p className="admin-note" role="status">
-          {notice}
+          {failure || notice}
         </p>
       )}
       {shown.length === 0 ? (
-        <p className="admin-empty">No rooms right now.</p>
+        <p className="admin-empty">
+          {status === "all"
+            ? "No open rooms right now."
+            : `No ${status === "lobby" ? "lobbies" : "games in play"} right now.`}
+        </p>
       ) : (
         <div
           className="admin-table"
@@ -478,6 +671,24 @@ function Rooms({
           <table>
             <thead>
               <tr>
+                <th className="admin-check">
+                  <input
+                    type="checkbox"
+                    aria-label="Select all rooms shown"
+                    checked={allChosen}
+                    ref={(box) => {
+                      if (box)
+                        box.indeterminate = chosen.length > 0 && !allChosen;
+                    }}
+                    onChange={(event) =>
+                      setSelected(
+                        event.target.checked
+                          ? new Set(shown.map((room) => room.roomCode))
+                          : new Set(),
+                      )
+                    }
+                  />
+                </th>
                 <th>Room</th>
                 <th>Status</th>
                 <th>Players</th>
@@ -495,9 +706,22 @@ function Rooms({
               {shown.map((room) => (
                 <tr
                   key={`${room.roomCode}-${room.createdAt}`}
-                  className="admin-row-link"
+                  className={`admin-row-link${selected.has(room.roomCode) ? " selected" : ""}`}
                   onClick={() => onOpen(room.roomCode)}
                 >
+                  <td
+                    className="admin-check"
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    <input
+                      type="checkbox"
+                      aria-label={`Select room ${room.roomCode}`}
+                      checked={selected.has(room.roomCode)}
+                      onChange={(event) =>
+                        toggle(room.roomCode, event.target.checked)
+                      }
+                    />
+                  </td>
                   <td>
                     {/* The row handles the click; the button gives keyboard
                         and screen reader users the same way in. */}
@@ -512,6 +736,9 @@ function Rooms({
                     <StatusBadge room={room} />
                     {room.locked && room.status === "lobby" && (
                       <small> locked</small>
+                    )}
+                    {room.archived && (
+                      <small className="admin-archived"> archived</small>
                     )}
                   </td>
                   <td>
@@ -542,9 +769,25 @@ function Rooms({
   );
 }
 
-function Games({ games }: { games: AdminGame[] }) {
+function Games({
+  games,
+  token,
+  notice,
+  onChanged,
+  onSignedOut,
+}: {
+  games: AdminGame[];
+  token: string;
+  notice: string;
+  onChanged: (message: string) => void;
+  onSignedOut: (message: string) => void;
+}) {
   const [query, setQuery] = useState(""),
-    [includeAbandoned, setIncludeAbandoned] = useState(true);
+    [includeAbandoned, setIncludeAbandoned] = useState(true),
+    [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set()),
+    [confirmDelete, setConfirmDelete] = useState(false),
+    [working, setWorking] = useState(false),
+    [failure, setFailure] = useState("");
   const shown = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase();
     return games.filter(
@@ -557,6 +800,43 @@ function Games({ games }: { games: AdminGame[] }) {
           )),
     );
   }, [games, query, includeAbandoned]);
+  // Deletes only ever apply to rows that are on screen.
+  const chosen = shown.filter((game) => selected.has(game.id)),
+    allChosen = shown.length > 0 && chosen.length === shown.length;
+  async function remove() {
+    setWorking(true);
+    setFailure("");
+    try {
+      const response = await fetch(`${api}/api/admin/rooms/bulk`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${token}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            action: "delete",
+            ids: chosen.map((game) => game.id),
+          }),
+        }),
+        body = (await response.json()) as { done?: string[]; error?: string };
+      if (response.status === 401) {
+        onSignedOut(body.error ?? "Sign in again.");
+        return;
+      }
+      if (!response.ok) {
+        setFailure(body.error ?? "The delete failed.");
+        return;
+      }
+      const done = body.done?.length ?? 0;
+      setSelected(new Set());
+      onChanged(`${done} game${done === 1 ? "" : "s"} deleted.`);
+    } catch {
+      setFailure("Could not reach the game server.");
+    } finally {
+      setWorking(false);
+      setConfirmDelete(false);
+    }
+  }
   return (
     <section className="admin-panel">
       <div className="admin-panel-head">
@@ -584,6 +864,64 @@ function Games({ games }: { games: AdminGame[] }) {
           Export CSV
         </button>
       </div>
+      <div
+        className="admin-bulk"
+        role="group"
+        aria-label="Actions for selected games"
+      >
+        <span>
+          {chosen.length
+            ? `${chosen.length} selected`
+            : "Tick games to act on them"}
+        </span>
+        <select
+          aria-label="Action for selected games"
+          value=""
+          disabled={!chosen.length || working}
+          onChange={(event) => {
+            if (event.target.value === "delete") setConfirmDelete(true);
+          }}
+        >
+          <option value="">Actions…</option>
+          <option value="delete">Delete</option>
+        </select>
+      </div>
+      {confirmDelete && (
+        <div
+          className="admin-confirm"
+          role="group"
+          aria-label="Confirm deleting games"
+        >
+          <p>
+            Delete <b>{chosen.length}</b> game{chosen.length === 1 ? "" : "s"}?
+            Each is removed everywhere: this table, the leaderboard and totals,
+            and its public summary page. This cannot be undone.
+          </p>
+          <div>
+            <button
+              className="secondary"
+              disabled={working}
+              onClick={() => setConfirmDelete(false)}
+            >
+              Cancel
+            </button>
+            <button
+              className="danger"
+              disabled={working}
+              onClick={() => void remove()}
+            >
+              {working
+                ? "Deleting…"
+                : `Yes, delete ${chosen.length} game${chosen.length === 1 ? "" : "s"}`}
+            </button>
+          </div>
+        </div>
+      )}
+      {(failure || notice) && (
+        <p className="admin-note" role="status">
+          {failure || notice}
+        </p>
+      )}
       {shown.length === 0 ? (
         <p className="admin-empty">
           {games.length
@@ -600,6 +938,24 @@ function Games({ games }: { games: AdminGame[] }) {
           <table>
             <thead>
               <tr>
+                <th className="admin-check">
+                  <input
+                    type="checkbox"
+                    aria-label="Select all games shown"
+                    checked={allChosen}
+                    ref={(box) => {
+                      if (box)
+                        box.indeterminate = chosen.length > 0 && !allChosen;
+                    }}
+                    onChange={(event) =>
+                      setSelected(
+                        event.target.checked
+                          ? new Set(shown.map((game) => game.id))
+                          : new Set(),
+                      )
+                    }
+                  />
+                </th>
                 <th>Ended</th>
                 <th>Room</th>
                 <th>Participants</th>
@@ -620,13 +976,53 @@ function Games({ games }: { games: AdminGame[] }) {
                     (player) => !game.winners.includes(player.nickname),
                   );
                 return (
-                  <tr key={`${game.roomCode}-${game.endedAt}`}>
+                  <tr
+                    key={game.id}
+                    className={selected.has(game.id) ? "selected" : ""}
+                  >
+                    <td className="admin-check">
+                      <input
+                        type="checkbox"
+                        aria-label={`Select game ${game.roomCode}`}
+                        checked={selected.has(game.id)}
+                        onChange={(event) => {
+                          const next = new Set(selected);
+                          if (event.target.checked) next.add(game.id);
+                          else next.delete(game.id);
+                          setSelected(next);
+                        }}
+                      />
+                    </td>
                     <td>{when(game.endedAt)}</td>
                     <td>
-                      <code>{game.roomCode}</code>
+                      {game.hasSummary ? (
+                        <a
+                          className="admin-link"
+                          href={summaryHref(game.roomCode)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          title="Open this game's leaderboard and moments"
+                        >
+                          {game.roomCode}
+                        </a>
+                      ) : (
+                        <code
+                          title={
+                            game.endReason === "abandoned"
+                              ? "Abandoned games have no summary"
+                              : "Finished before summaries were kept"
+                          }
+                        >
+                          {game.roomCode}
+                        </code>
+                      )}
                     </td>
-                    <td>
-                      <PlayerList players={order} final />
+                    <td
+                      title={order
+                        .map((player) => `${player.nickname} ${player.score}`)
+                        .join(", ")}
+                    >
+                      {order.length}
                     </td>
                     <td>
                       <b>{game.winners.join(", ") || "-"}</b>
@@ -664,7 +1060,7 @@ function Games({ games }: { games: AdminGame[] }) {
   );
 }
 
-function Activity({
+function RateLimits({
   data,
   notice,
   onReset,
@@ -673,9 +1069,10 @@ function Activity({
   notice: string;
   onReset: () => void;
 }) {
-  const days = [...data.daily].reverse();
+  // Only shown while a network is blocked, or right after clearing.
+  if (!data.rateLimited.length && !notice) return null;
   return (
-    <section className="admin-panel">
+    <section className="admin-panel admin-limits-banner">
       <div className="admin-limits">
         <div>
           <b>Limits per network</b>
@@ -697,35 +1094,6 @@ function Activity({
         </button>
       </div>
       {notice && <p className="admin-note">{notice}</p>}
-      <div
-        className="admin-table"
-        tabIndex={0}
-        role="region"
-        aria-label="Daily activity table"
-      >
-        <table>
-          <thead>
-            <tr>
-              <th>Day (UTC)</th>
-              {metricLabels.map(([key, label]) => (
-                <th key={key}>{label}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {days.map((day) => (
-              <tr key={day.day}>
-                <td>{day.day}</td>
-                {metricLabels.map(([key]) => (
-                  <td key={key} className={day.metrics[key] ? "" : "zero"}>
-                    {day.metrics[key] ?? 0}
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
     </section>
   );
 }
@@ -787,6 +1155,7 @@ const moveLabel: Record<AdminMove["kind"], string> = {
   pass: "Passed",
   exchange: "Exchanged",
   "auto-pass": "Timed out",
+  rejected: "Word rejected",
 };
 
 function StatusBadge({ room }: { room: AdminRoom }) {
@@ -873,7 +1242,25 @@ function RoomDetail({
   }
 
   const room = detail?.room,
-    live = detail?.live ?? null;
+    live = detail?.live ?? null,
+    finished = Boolean(room?.startedAt && room.endedAt);
+  // Once the room has closed only the stored summary still has the board.
+  const [stored, setStored] = useState<GameSummary | null>(null);
+  useEffect(() => {
+    if (!detail || detail.live || !finished) return;
+    let current = true;
+    fetch(`${api}/api/games/${encodeURIComponent(code)}`)
+      .then(async (response) =>
+        response.ok ? ((await response.json()) as GameSummary) : null,
+      )
+      .then(
+        (summary) => current && setStored(summary),
+        () => undefined,
+      );
+    return () => {
+      current = false;
+    };
+  }, [detail, finished, code]);
   return (
     <section className="admin-panel admin-room" aria-label={`Room ${code}`}>
       <div className="admin-room-head">
@@ -884,6 +1271,7 @@ function RoomDetail({
           Room <code>{code}</code>
         </h2>
         {room && <StatusBadge room={room} />}
+        {finished && <SummaryLink code={code} />}
         {live && !confirming && (
           <button className="danger" onClick={() => setConfirming(true)}>
             Delete room
@@ -894,8 +1282,9 @@ function RoomDetail({
         <div className="admin-confirm" role="group" aria-label="Confirm delete">
           <p>
             Delete room <b>{code}</b>? Everyone in it is disconnected and told
-            the room is gone. Its board, scores and dashboard entry are removed.
-            This cannot be undone.
+            the room is gone. Every trace of its game is removed, including the
+            past game, leaderboard totals and summary page. This cannot be
+            undone.
           </p>
           <div>
             <button
@@ -947,7 +1336,10 @@ function RoomDetail({
                 "Tiles in bag",
                 room.startedAt === null ? "-" : String(room.bagRemaining),
               ],
-              ["Whose turn", live?.currentPlayer ?? "-"],
+              [
+                "Whose turn",
+                room.status === "active" ? (live?.currentPlayer ?? "-") : "-",
+              ],
               ["Open connections", live ? String(live.connections) : "-"],
               [
                 "Ending",
@@ -958,7 +1350,6 @@ function RoomDetail({
                     : "-",
               ],
               ["Expires", live ? when(live.expiresAt) : "-"],
-              ["Rematch room", live?.rematchCode ?? "-"],
             ] as const
           ).map(([label, value]) => (
             <div key={label}>
@@ -1106,6 +1497,20 @@ function RoomDetail({
           <div>
             <h3>Board</h3>
             <MiniBoard board={live.board} />
+          </div>
+        </div>
+      )}
+      {!live && stored && (
+        <div className="admin-room-play">
+          <div>
+            <h3>Final board</h3>
+            <p className="admin-empty">
+              The room has closed; this board comes from the game's stored
+              summary.
+            </p>
+          </div>
+          <div>
+            <FinalBoard size={stored.boardSize} tiles={stored.tiles} />
           </div>
         </div>
       )}

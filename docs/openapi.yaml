@@ -32,10 +32,23 @@ paths:
         "404": { description: Room not found }
     delete:
       summary: Delete a room, closing its sockets with 4004 and clearing its storage
-      description: "Requires `Authorization: Bearer <ADMIN_TOKEN>`. No history is kept for the deleted room."
+      description: "Requires `Authorization: Bearer <ADMIN_TOKEN>`. Wipes the game everywhere: room storage, dashboard row, past-game record, leaderboard and totals, and summary page."
       responses:
         "200": { description: "{ deleted: roomCode }" }
         "404": { description: Room not found }
+  /api/admin/rooms/bulk:
+    post:
+      summary: Archive, unarchive or delete up to 300 rooms or past games at once
+      description: >
+        Requires `Authorization: Bearer <ADMIN_TOKEN>`. Body
+        `{ action: "archive" | "unarchive" | "delete", codes?: string[], ids?: string[] }`.
+        `ids` are past games' room ids (AdminGame.id) and work with delete
+        only. Archiving only hides a room from the admin rooms list; delete
+        behaves like DELETE /api/admin/rooms/{roomCode} for each one.
+      responses:
+        "200": { description: "{ action, done: string[], missing: string[] }" }
+        "400": { description: Invalid action or codes }
+        "401": { description: Invalid admin token }
   /api/admin/rate-limits/reset:
     post:
       summary: Clear room creation and join rate limits for every network
@@ -77,6 +90,25 @@ paths:
           }
         "404": { description: "{ joinable: false, reason: missing }" }
         "429": { description: Too many checks }
+  /api/games/{code}:
+    get:
+      summary: A finished online game's summary (leaderboard, moments, final board)
+      description: >
+        Public; anyone with the room code can read it. Kept for 180 days after
+        the game ends. Shares the 300 checks per network per 10 minutes limit
+        with room status checks. Returns GameSummary (see
+        packages/game-engine/src/summary.ts).
+      parameters:
+        - { name: code, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: GameSummary }
+        "404":
+          {
+            description: No summary (still running,
+            never finished,
+            or expired),
+          }
+        "429": { description: Too many requests }
   /api/rooms/{code}/join:
     post:
       summary: Join an unstarted room
@@ -129,5 +161,5 @@ components:
 # packages/game-engine/src/protocol.ts are authoritative. Every mutating client
 # action carries a UUID actionId and expected revision. Public snapshots omit
 # bag contents, tokens, and all racks; seat.private is sent only to its token.
-# Snapshots include lastMove (words and score of the latest turn), per-player
-# left flags, and rematchCode, which room.rematch sets once the game is over.
+# Snapshots include lastMove (words and score of the latest turn) and per-player
+# left flags.

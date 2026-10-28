@@ -25,7 +25,8 @@ describe("protocol schemas", () => {
     },
     {
       nickname: "Ada",
-      settings: { boardSize: 15, capacity: 8, timerSeconds: 0 },
+      // Seats are 2, 3, 4 or 8 ("4+"), nothing in between.
+      settings: { boardSize: 15, capacity: 5, timerSeconds: 0 },
     },
   ])("rejects malformed room input %#", (input) =>
     expect(createRoomSchema.safeParse(input).success).toBe(false),

@@ -1,5 +1,11 @@
 import { DurableObject } from "cloudflare:workers";
-import { passTurn } from "@scrabble/game-engine";
+import {
+  passTurn,
+  stampMoves,
+  summarizeRoom,
+  summaryWords,
+  type GameSummary,
+} from "@scrabble/game-engine";
 import {
   CLOSE_ROOM_GONE,
   CLOSE_SEAT_REJECTED,
@@ -14,15 +20,22 @@ import {
   addMember,
   applyAction,
   createLobby,
+  draftCells,
+  expireChallenge,
   leaveRoom,
   markDisconnected,
   publicRoom,
-  recordRematch,
   roomStatus,
   withoutPending,
   type RoomData,
 } from "./room-model.js";
-import { validateWithWordSoHard } from "./dictionary.js";
+import {
+  iceServers,
+  voiceAllowed,
+  voiceRoster,
+  type SocketTag,
+} from "./voice.js";
+import { defineWords, validateWithWordSoHard } from "./dictionary.js";
 import {
   activityFromLive,
   adminGame,
@@ -54,12 +67,17 @@ interface Env {
   ADMIN_TOKEN?: string;
   /** Rooms one network may create per hour (default 10). */
   ROOM_CREATE_LIMIT?: string;
+  /** Cloudflare TURN key for voice relays; voice uses STUN only when unset. */
+  TURN_KEY_ID?: string;
+  TURN_KEY_API_TOKEN?: string;
 }
 const JOIN_LIMIT = 60,
   PEEK_LIMIT = 300,
   JOIN_WINDOW_MS = 10 * 60_000,
   CREATE_WINDOW_MS = 60 * 60_000,
-  ADMIN_FAILURE_LIMIT = 10;
+  ADMIN_FAILURE_LIMIT = 10,
+  /** How long a finished game's summary stays viewable. */
+  SUMMARY_RETENTION_MS = 180 * 24 * 60 * 60_000;
 function createLimit(env: Env) {
   const limit = Number(env.ROOM_CREATE_LIMIT);
   return Number.isInteger(limit) && limit > 0 ? limit : 10;
@@ -189,6 +207,51 @@ export default {
             503,
             cors(req, env),
           );
+        if (url.pathname === "/api/admin/rooms/bulk" && req.method === "POST") {
+          const body = await req.json<{
+              action?: unknown;
+              codes?: unknown;
+              ids?: unknown;
+            }>(),
+            codes = Array.isArray(body.codes)
+              ? body.codes.filter(
+                  (code): code is string =>
+                    typeof code === "string" && /^[A-Za-z0-9]{6}$/.test(code),
+                )
+              : [],
+            ids = Array.isArray(body.ids)
+              ? body.ids.filter(
+                  (id): id is string =>
+                    typeof id === "string" && /^[0-9a-f]{64}$/.test(id),
+                )
+              : [];
+          if (
+            !["archive", "unarchive", "delete"].includes(String(body.action)) ||
+            (ids.length > 0 && body.action !== "delete") ||
+            codes.length + ids.length === 0 ||
+            codes.length + ids.length > 300
+          )
+            return json(
+              {
+                error:
+                  "Choose archive, unarchive or delete and 1 to 300 rooms.",
+              },
+              400,
+              cors(req, env),
+            );
+          const r = await directory(env).fetch("https://d/admin", {
+            method: "POST",
+            body: JSON.stringify({
+              action: "bulk",
+              bulk: body.action,
+              codes: [...new Set(codes.map((code) => code.toUpperCase()))],
+              ids: [...new Set(ids)],
+              clientKey: await clientKey(req, env),
+              authorized: await adminAuthorized(req, env),
+            }),
+          });
+          return json(await r.json(), r.status, cors(req, env));
+        }
         const roomPath = /^\/api\/admin\/rooms\/([A-Za-z0-9]{6})$/.exec(
             url.pathname,
           ),
@@ -259,6 +322,26 @@ export default {
               cors(req, env),
             );
       }
+      const summary = /^\/api\/games\/([A-Za-z0-9]{6})$/.exec(url.pathname);
+      if (summary && req.method === "GET") {
+        const admission = await directory(env).fetch("https://d/admit", {
+          method: "POST",
+          body: JSON.stringify({
+            clientKey: await clientKey(req, env),
+            kind: "peek",
+          }),
+        });
+        if (!admission.ok)
+          return json(
+            { error: "Too many requests. Try again shortly." },
+            429,
+            cors(req, env),
+          );
+        const r = await directory(env).fetch(
+          `https://d/summary/${(summary[1] ?? "").toUpperCase()}`,
+        );
+        return json(await r.json(), r.status, cors(req, env));
+      }
       const join = /^\/api\/rooms\/([^/]+)\/join$/.exec(url.pathname);
       if (join && req.method === "POST") {
         const directory = env.ROOM_DIRECTORY.get(
@@ -327,8 +410,16 @@ export class RoomDirectory extends DurableObject<Env> {
     );
     // Admin history: one row per room, one per finished game, daily counters.
     ctx.storage.sql.exec(
-      "CREATE TABLE IF NOT EXISTS room_activity(room_id TEXT PRIMARY KEY,code TEXT,phase TEXT,revision INTEGER,settings_json TEXT,players_json TEXT,locked INTEGER,turn_number INTEGER,bag_remaining INTEGER,created_at INTEGER,started_at INTEGER,ended_at INTEGER,closed_at INTEGER,close_reason TEXT,end_reason TEXT,updated_at INTEGER,best_word TEXT,best_score INTEGER,best_by TEXT,plays INTEGER)",
+      "CREATE TABLE IF NOT EXISTS room_activity(room_id TEXT PRIMARY KEY,code TEXT,phase TEXT,revision INTEGER,settings_json TEXT,players_json TEXT,locked INTEGER,turn_number INTEGER,bag_remaining INTEGER,created_at INTEGER,started_at INTEGER,ended_at INTEGER,closed_at INTEGER,close_reason TEXT,end_reason TEXT,updated_at INTEGER,best_word TEXT,best_score INTEGER,best_by TEXT,plays INTEGER,archived_at INTEGER)",
     );
+    // Added after launch: older storage gains the column once.
+    try {
+      ctx.storage.sql.exec(
+        "ALTER TABLE room_activity ADD COLUMN archived_at INTEGER",
+      );
+    } catch {
+      // Already there.
+    }
     ctx.storage.sql.exec(
       "CREATE TABLE IF NOT EXISTS games(room_id TEXT PRIMARY KEY,code TEXT,started_at INTEGER,ended_at INTEGER,board_size INTEGER,timer_seconds INTEGER,players_json TEXT,winners_json TEXT,winning_score INTEGER,end_reason TEXT,turns INTEGER,plays INTEGER,best_word TEXT,best_score INTEGER,best_by TEXT)",
     );
@@ -337,6 +428,13 @@ export class RoomDirectory extends DurableObject<Env> {
     );
     ctx.storage.sql.exec(
       "CREATE TABLE IF NOT EXISTS daily_metrics(day TEXT,metric TEXT,count INTEGER,PRIMARY KEY(day,metric))",
+    );
+    // Finished games' summaries, viewable by code for 180 days.
+    ctx.storage.sql.exec(
+      "CREATE TABLE IF NOT EXISTS summaries(code TEXT PRIMARY KEY,room_id TEXT UNIQUE,ended_at INTEGER,json TEXT)",
+    );
+    ctx.storage.sql.exec(
+      "CREATE INDEX IF NOT EXISTS summaries_ended ON summaries(ended_at)",
     );
     // Rooms an admin deleted; late reports from them are dropped.
     ctx.storage.sql.exec(
@@ -361,6 +459,26 @@ export class RoomDirectory extends DurableObject<Env> {
     return mapped
       ? { row: null, id: this.env.ROOMS.idFromName(mapped.room_id) }
       : null;
+  }
+  /**
+   * Wipes a room and every trace of its game: closes its sockets, clears its
+   * storage, and removes its dashboard row (which "rooms today" counts),
+   * past-game record (so leaderboards and totals no longer count it) and
+   * summary page. Only the code mapping stays, as a tombstone, so an old invite link
+   * cannot lead to a different game.
+   */
+  private async deleteRoom(id: DurableObjectId) {
+    await this.env.ROOMS.get(id).fetch("https://r/admin/delete", {
+      method: "POST",
+    });
+    const key = id.toString();
+    this.ctx.storage.sql.exec(
+      "INSERT OR REPLACE INTO deleted_rooms VALUES(?,?)",
+      key,
+      Date.now(),
+    );
+    for (const table of ["room_activity", "games", "summaries"])
+      this.ctx.storage.sql.exec(`DELETE FROM ${table} WHERE room_id=?`, key);
   }
   private bump(metric: Metric, by = 1, now = Date.now()) {
     if (by > 0)
@@ -419,6 +537,14 @@ export class RoomDirectory extends DurableObject<Env> {
         this.recordGame(row, now, "abandoned");
         this.bump("games_finished", 1, now);
       }
+      // A room that never started leaves no trace: no game, no stats.
+      if (row.started_at === null) {
+        this.ctx.storage.sql.exec(
+          "DELETE FROM room_activity WHERE room_id=?",
+          report.roomId,
+        );
+        return;
+      }
       this.ctx.storage.sql.exec(
         "UPDATE room_activity SET closed_at=?,close_reason=?,ended_at=COALESCE(ended_at,CASE WHEN started_at IS NULL THEN NULL ELSE ? END),updated_at=? WHERE room_id=?",
         now,
@@ -464,9 +590,10 @@ export class RoomDirectory extends DurableObject<Env> {
         ? (report.lastPlay?.nickname ?? null)
         : (row?.best_by ?? null),
       plays: (row?.plays ?? 0) + (newPlay ? 1 : 0),
+      archived_at: row?.archived_at ?? null,
     };
     this.ctx.storage.sql.exec(
-      "INSERT OR REPLACE INTO room_activity(room_id,code,phase,revision,settings_json,players_json,locked,turn_number,bag_remaining,created_at,started_at,ended_at,closed_at,close_reason,end_reason,updated_at,best_word,best_score,best_by,plays) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+      "INSERT OR REPLACE INTO room_activity(room_id,code,phase,revision,settings_json,players_json,locked,turn_number,bag_remaining,created_at,started_at,ended_at,closed_at,close_reason,end_reason,updated_at,best_word,best_score,best_by,plays,archived_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
       next.room_id,
       next.code,
       next.phase,
@@ -487,6 +614,7 @@ export class RoomDirectory extends DurableObject<Env> {
       next.best_score,
       next.best_by,
       next.plays,
+      next.archived_at,
     );
     const previousPlayers = row
       ? (JSON.parse(row.players_json) as AdminPlayer[]).length
@@ -502,12 +630,16 @@ export class RoomDirectory extends DurableObject<Env> {
   }
   private prune(now = Date.now()) {
     this.ctx.storage.sql.exec(
-      "DELETE FROM room_activity WHERE closed_at IS NOT NULL AND closed_at<?",
+      "DELETE FROM room_activity WHERE closed_at IS NOT NULL AND (closed_at<? OR started_at IS NULL)",
       now - ROOM_HISTORY_MS,
     );
     this.ctx.storage.sql.exec(
       "DELETE FROM games WHERE ended_at<?",
       now - GAME_HISTORY_MS,
+    );
+    this.ctx.storage.sql.exec(
+      "DELETE FROM summaries WHERE ended_at<?",
+      now - SUMMARY_RETENTION_MS,
     );
     this.ctx.storage.sql.exec(
       "DELETE FROM deleted_rooms WHERE deleted_at<?",
@@ -522,13 +654,13 @@ export class RoomDirectory extends DurableObject<Env> {
     this.prune(now);
     const rooms = [
         ...this.ctx.storage.sql.exec<ActivityRow>(
-          "SELECT * FROM room_activity WHERE closed_at IS NULL OR closed_at>? ORDER BY updated_at DESC LIMIT 300",
+          "SELECT * FROM room_activity WHERE closed_at IS NULL OR closed_at>? OR archived_at IS NOT NULL ORDER BY updated_at DESC LIMIT 300",
           now - 24 * 60 * 60_000,
         ),
       ].map(adminRoom),
       games = [
         ...this.ctx.storage.sql.exec<GameRow>(
-          "SELECT * FROM games ORDER BY ended_at DESC",
+          "SELECT g.*,EXISTS(SELECT 1 FROM summaries s WHERE s.room_id=g.room_id) AS has_summary FROM games g ORDER BY g.ended_at DESC",
         ),
       ].map(adminGame),
       today = utcDay(now),
@@ -595,7 +727,15 @@ export class RoomDirectory extends DurableObject<Env> {
             sum + room.players.filter((player) => player.connected).length,
           0,
         ),
-        roomsToday: days.get(today)?.rooms_created ?? 0,
+        // Counted from the room rows, not the daily counter, so a deleted
+        // room stops counting. Rows are kept for 7 days, well past today.
+        roomsToday:
+          [
+            ...this.ctx.storage.sql.exec<{ n: number }>(
+              "SELECT COUNT(*) AS n FROM room_activity WHERE created_at>=?",
+              Date.parse(`${today}T00:00:00Z`),
+            ),
+          ][0]?.n ?? 0,
         gamesToday: games.filter((game) => utcDay(game.endedAt) === today)
           .length,
         gamesRecorded: games.length,
@@ -700,6 +840,17 @@ export class RoomDirectory extends DurableObject<Env> {
         let code = "";
         for (let i = 0; i < 6; i++)
           code += chars[rng.nextInt(chars.length)] ?? "";
+        // A code that names a stored summary stays reserved, so a summary
+        // link can never lead to a different game.
+        if (
+          [
+            ...this.ctx.storage.sql.exec(
+              "SELECT 1 FROM summaries WHERE code=?",
+              code,
+            ),
+          ].length
+        )
+          continue;
         const roomId = crypto.randomUUID(),
           // Retain the mapping as a tombstone after the room's four-hour life
           // so a recently shared code cannot point at a different game.
@@ -757,14 +908,55 @@ export class RoomDirectory extends DurableObject<Env> {
       this.applyReport(await req.json<RoomReport>());
       return json({ ok: true });
     }
+    if (req.method === "POST" && url.pathname === "/summary") {
+      const input = await req.json<{ roomId: string; summary: GameSummary }>();
+      const deleted = [
+        ...this.ctx.storage.sql.exec(
+          "SELECT 1 FROM deleted_rooms WHERE room_id=?",
+          input.roomId,
+        ),
+      ].length;
+      if (!deleted && input.summary.code)
+        this.ctx.storage.sql.exec(
+          "INSERT OR IGNORE INTO summaries VALUES(?,?,?,?)",
+          input.summary.code,
+          input.roomId,
+          input.summary.endedAt,
+          JSON.stringify(input.summary),
+        );
+      return json({ ok: true });
+    }
+    const stored = /^\/summary\/([A-Z0-9]{6})$/.exec(url.pathname);
+    if (req.method === "GET" && stored) {
+      const row = [
+        ...this.ctx.storage.sql.exec<{ json: string; ended_at: number }>(
+          "SELECT json,ended_at FROM summaries WHERE code=?",
+          stored[1] ?? "",
+        ),
+      ][0];
+      return row && row.ended_at > Date.now() - SUMMARY_RETENTION_MS
+        ? new Response(row.json, {
+            headers: { "content-type": "application/json" },
+          })
+        : json(
+            {
+              error:
+                "No summary for that game. It may still be running, it may have been deleted, or it ended more than 180 days ago.",
+            },
+            404,
+          );
+    }
     if (req.method === "POST" && url.pathname === "/event") {
       this.bump((await req.json<{ metric: Metric }>()).metric);
       return json({ ok: true });
     }
     if (req.method === "POST" && url.pathname === "/admin") {
       const input = await req.json<{
-        action: "overview" | "reset-limits" | "room" | "delete-room";
+        action: "overview" | "reset-limits" | "room" | "delete-room" | "bulk";
         roomCode?: string;
+        bulk?: "archive" | "unarchive" | "delete";
+        codes?: string[];
+        ids?: string[];
         clientKey: string;
         authorized: boolean;
       }>();
@@ -814,21 +1006,47 @@ export class RoomDirectory extends DurableObject<Env> {
           };
           return json(detail);
         }
-        // Deleting closes every socket and wipes the room's storage. The room
-        // leaves no history behind; the code mapping stays as a tombstone so
-        // the code cannot be handed to a different game.
-        await stub.fetch("https://r/admin/delete", { method: "POST" });
-        const key = target.id.toString();
-        this.ctx.storage.sql.exec(
-          "INSERT OR REPLACE INTO deleted_rooms VALUES(?,?)",
-          key,
-          Date.now(),
-        );
-        this.ctx.storage.sql.exec(
-          "DELETE FROM room_activity WHERE room_id=?",
-          key,
-        );
+        await this.deleteRoom(target.id);
         return json({ deleted: input.roomCode });
+      }
+      if (input.action === "bulk") {
+        const done: string[] = [],
+          missing: string[] = [],
+          now = Date.now();
+        // Past games are deleted by id: a code may have been reused.
+        if (input.bulk === "delete")
+          for (const id of input.ids ?? []) {
+            let target: DurableObjectId;
+            try {
+              target = this.env.ROOMS.idFromString(id);
+            } catch {
+              missing.push(id);
+              continue;
+            }
+            await this.deleteRoom(target);
+            done.push(id);
+          }
+        for (const code of input.codes ?? []) {
+          const target = this.findRoom(code);
+          if (!target) {
+            missing.push(code);
+            continue;
+          }
+          if (input.bulk === "delete") await this.deleteRoom(target.id);
+          else if (target.row)
+            this.ctx.storage.sql.exec(
+              "UPDATE room_activity SET archived_at=? WHERE room_id=?",
+              input.bulk === "archive" ? now : null,
+              target.row.room_id,
+            );
+          else {
+            // Only rooms with a dashboard row can be archived.
+            missing.push(code);
+            continue;
+          }
+          done.push(code);
+        }
+        return json({ action: input.bulk, done, missing });
       }
       return json(this.overview());
     }
@@ -877,6 +1095,12 @@ export class Room extends DurableObject<Env> {
     return row ? (JSON.parse(row.json) as RoomData) : null;
   }
   private save(r: RoomData) {
+    const before = [
+      ...this.ctx.storage.sql.exec<{ phase: string | null }>(
+        "SELECT json_extract(json,'$.phase') AS phase FROM state WHERE id=1",
+      ),
+    ][0]?.phase;
+    if (before === "active" && r.phase === "results" && r.game) this.archive(r);
     this.ctx.storage.sql.exec(
       "INSERT OR REPLACE INTO state VALUES(1,?)",
       JSON.stringify(r),
@@ -890,6 +1114,30 @@ export class Room extends DurableObject<Env> {
       roomId: this.ctx.id.toString(),
       reason,
     } satisfies RoomReport);
+  }
+  /**
+   * Keeps the finished game's summary, with the highlighted words' meanings,
+   * in the directory so it outlives the room. Best effort, like reports.
+   */
+  private archive(r: RoomData) {
+    const summary = summarizeRoom(publicRoom(r), Date.now()),
+      roomId = this.ctx.id.toString();
+    this.ctx.waitUntil(
+      defineWords(summaryWords(summary))
+        .then((meanings) =>
+          directory(this.env).fetch("https://d/summary", {
+            method: "POST",
+            body: JSON.stringify({
+              roomId,
+              summary: { ...summary, meanings },
+            }),
+          }),
+        )
+        .then(
+          () => undefined,
+          () => undefined,
+        ),
+    );
   }
   /** Admin bookkeeping is best effort and never delays or fails a move. */
   private tell(path: "report" | "event", body: unknown) {
@@ -919,7 +1167,8 @@ export class Room extends DurableObject<Env> {
       r.expiresAt,
       r.turnDeadline,
       r.emptyExpiresAt,
-      currentGrace,
+      // While a rejected word is being settled only its own clock runs.
+      r.challenge ? r.challenge.deadline : currentGrace,
     ].filter((value): value is number => value !== null && value !== undefined);
     if (candidates.length)
       await this.ctx.storage.setAlarm(
@@ -953,7 +1202,40 @@ export class Room extends DurableObject<Env> {
       // The socket is closing; its webSocketClose handler tidies up.
     }
   }
+  /** Tells every socket who is in the voice chat; a no-op without voice. */
+  private broadcastVoice(r: RoomData, closing?: WebSocket) {
+    if (r.settings.voice !== true) {
+      // Voice was switched off: forget who was in it, so turning it back on
+      // starts with an empty call rather than stale sessions.
+      for (const ws of this.ctx.getWebSockets()) {
+        const tag = ws.deserializeAttachment() as SocketTag | null;
+        if (tag?.voice)
+          ws.serializeAttachment({
+            playerId: tag.playerId,
+            ...(tag.left ? { left: true } : {}),
+          } satisfies SocketTag);
+      }
+      return;
+    }
+    const sockets = this.ctx.getWebSockets().filter((ws) => ws !== closing),
+      tags = sockets.map(
+        (ws) => ws.deserializeAttachment() as SocketTag | null,
+      ),
+      message = JSON.stringify({
+        type: "voice.roster",
+        peers: voiceRoster(r, tags),
+      });
+    sockets.forEach((ws, index) => {
+      if (!tags[index]) return;
+      try {
+        ws.send(message);
+      } catch {
+        // Closing; it gets the roster again when it reconnects.
+      }
+    });
+  }
   private broadcast(r: RoomData) {
+    this.broadcastVoice(r);
     for (const ws of this.ctx.getWebSockets()) {
       const a = ws.deserializeAttachment() as { playerId: string } | null;
       if (a) this.send(ws, r, a.playerId);
@@ -1097,10 +1379,80 @@ export class Room extends DurableObject<Env> {
         this.send(ws, r, a.playerId);
         return;
       }
-      if (msg.type === "room.rematch") {
-        r = recordRematch(r, a.playerId, msg.roomCode);
-        this.save(r);
-        this.broadcast(r);
+      if (msg.type === "voice.state") {
+        // Hanging up is always fine, even just after the host turned voice off.
+        if (msg.session === null && !voiceAllowed(r, a.playerId)) return;
+        if (!voiceAllowed(r, a.playerId))
+          throw new Error("Voice chat is off in this room.");
+        const tag = a as SocketTag,
+          joining = msg.session !== null && tag.voice?.session !== msg.session;
+        ws.serializeAttachment({
+          playerId: tag.playerId,
+          ...(tag.left ? { left: true } : {}),
+          ...(msg.session === null
+            ? {}
+            : { voice: { session: msg.session, muted: msg.muted } }),
+        } satisfies SocketTag);
+        // Connection details first, so the roster can be acted on at once.
+        if (joining)
+          ws.send(
+            JSON.stringify({
+              type: "voice.config",
+              iceServers: await iceServers(this.env, Date.now()),
+            }),
+          );
+        this.broadcastVoice(r);
+        return;
+      }
+      if (msg.type === "voice.signal") {
+        const tag = a as SocketTag;
+        if (
+          !voiceAllowed(r, a.playerId) ||
+          tag.voice?.session !== msg.session ||
+          msg.to === a.playerId
+        )
+          return;
+        const relay = JSON.stringify({
+          type: "voice.signal",
+          from: a.playerId,
+          session: msg.session,
+          toSession: msg.toSession,
+          description: msg.description,
+          candidate: msg.candidate,
+          bye: msg.bye,
+        });
+        for (const other of this.ctx.getWebSockets()) {
+          const o = other.deserializeAttachment() as SocketTag | null;
+          if (o?.playerId !== msg.to || o.voice?.session !== msg.toSession)
+            continue;
+          try {
+            other.send(relay);
+          } catch {
+            // The peer is reconnecting; it will negotiate again.
+          }
+        }
+        return;
+      }
+      if (msg.type === "game.draft") {
+        const cells = draftCells(r, a.playerId, msg.cells);
+        if (cells === null) return;
+        const relay = JSON.stringify({
+          type: "game.draft",
+          playerId: a.playerId,
+          cells,
+        });
+        for (const other of this.ctx.getWebSockets()) {
+          const o = other.deserializeAttachment() as {
+            playerId: string;
+          } | null;
+          if (!o || o.playerId === a.playerId) continue;
+          // Same as send(): a closing socket must not fail the relay.
+          try {
+            other.send(relay);
+          } catch {
+            // The next snapshot reaches it once it reconnects.
+          }
+        }
         return;
       }
       if (msg.type === "room.leave") {
@@ -1174,12 +1526,9 @@ export class Room extends DurableObject<Env> {
       this.save(n);
       await this.schedule(n);
       this.broadcast(n);
-    } catch (e) {
-      if (
-        e instanceof Error &&
-        e.message.endsWith("is not accepted by the dictionary.")
-      )
+      if (n.challenge && !r.challenge)
         this.tell("event", { metric: "words_rejected" });
+    } catch (e) {
       ws.send(
         JSON.stringify({
           type: "error",
@@ -1194,6 +1543,7 @@ export class Room extends DurableObject<Env> {
         left?: boolean;
       } | null,
       r = this.load();
+    if (r) this.broadcastVoice(r, ws);
     if (!a?.playerId || a.left || !r?.members.some((m) => m.id === a.playerId))
       return;
     const replacementExists = this.ctx
@@ -1235,9 +1585,15 @@ export class Room extends DurableObject<Env> {
       for (const ws of this.ctx.getWebSockets()) ws.close(4000, "Expired");
       return;
     }
+    if (r.phase === "active" && r.challenge && r.challenge.deadline <= now) {
+      r = expireChallenge(r, now);
+      this.save(r);
+      this.broadcast(r);
+    }
     if (
       r.phase === "active" &&
       r.game &&
+      !r.challenge &&
       !r.members.every((member) => !member.connected)
     ) {
       const currentId = r.members[r.game.currentPlayerIndex]?.id;
@@ -1258,6 +1614,7 @@ export class Room extends DurableObject<Env> {
             break;
           game = passTurn(game, "auto-pass");
         }
+        game = stampMoves(r.game, game, now);
         r = {
           ...withoutPending(r),
           game,

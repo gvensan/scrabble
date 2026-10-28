@@ -2,7 +2,7 @@
 
 ## Baseline
 Original Scrabble-inspired gameplay, not represented as official Scrabble. Conventional English tile values/distribution are a *candidate* reference; independently verify reuse rights and rules before claiming standard compliance.
-- 15x15 default. Rack 7 tiles, 2-4 players.
+- 15x15 default. Rack 7 tiles, 2-4 players, or online up to 8 ("4+"): a board takes as many players as its bag holds 14 tiles each for (7 on 15x15, 8 on 21x21 and larger, never fewer than 4).
 - Random tile bag drawn server-side, initial rack 7, refill after accepted move/exchange.
 - First move must intersect center cell on odd board; on even board one of four center cells. All tiles in one row or column, no gaps unless existing letters bridge them.
 - Later moves connect to existing board words; all new words created must validate.

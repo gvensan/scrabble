@@ -3,6 +3,7 @@ import {
   analyzePlay,
   createBoard,
   createGame,
+  endGame,
   exchangeTiles,
   getBagTarget,
   getDistribution,
@@ -10,6 +11,7 @@ import {
   isSupportedBoardSize,
   passTurn,
   playMove,
+  stampMoves,
 } from "./index.js";
 import type { GameState, Placement, RandomSource } from "./index.js";
 
@@ -94,7 +96,7 @@ describe("gameplay", () => {
       expect(move.score).toBeGreaterThan(0);
     }
   });
-  it("rejects diagonal and invalid words without changing state", () => {
+  it("rejects diagonal placements without using the turn", () => {
     const state = createGame(
       { boardSize: 15, timerSeconds: 0 },
       ["A", "B"],
@@ -111,13 +113,36 @@ describe("gameplay", () => {
         acceptAll,
       ).ok,
     ).toBe(false);
-    const invalid = playMove(
+  });
+  it("costs the turn when the dictionary refuses a word", () => {
+    const state = createGame(
+      { boardSize: 15, timerSeconds: 0 },
+      ["A", "B"],
+      new SequenceRandom(),
+    );
+    const result = playMove(
       state,
       placementsFor(state, 2, 7, 7),
       (words) => new Map(words.map((word) => [word, false])),
     );
-    expect(invalid).toMatchObject({ ok: false });
-    expect(state.board[7]![7]!.tile).toBeNull();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.rejected).toHaveLength(1);
+    expect(result.score).toBe(0);
+    const after = result.state;
+    expect(after.board[7]![7]!.tile).toBeNull();
+    expect(after.players[0]!.rack).toEqual(state.players[0]!.rack);
+    expect(after.players[0]!.score).toBe(0);
+    expect(after.bag).toEqual(state.bag);
+    expect(after.currentPlayerIndex).toBe(1);
+    expect(after.scorelessTurns).toBe(state.scorelessTurns + 1);
+    expect(after.lastMove).toMatchObject({
+      kind: "rejected",
+      score: 0,
+      tiles: 2,
+      words: [{ word: result.rejected?.[0], score: 0 }],
+    });
+    expect(after.lastMove?.placed).toBeUndefined();
   });
   it("scores a connected crossing and consumes premiums once", () => {
     const state = createGame(
@@ -225,5 +250,93 @@ describe("gameplay", () => {
         { row: 7, col: 7, tile: { letter: null, value: 0 } },
       ]),
     ).toMatchObject({ ok: false });
+  });
+});
+describe("move timing", () => {
+  it("exchanging scores nothing and counts as a scoreless turn", () => {
+    const state = createGame(
+      { boardSize: 15, timerSeconds: 0 },
+      ["A", "B"],
+      new SequenceRandom(),
+    );
+    const id = state.players[0]!.rack[0]!.id;
+    const result = exchangeTiles(state, [id], new SequenceRandom());
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.state.players[0]!.score).toBe(0);
+    expect(result.state.scorelessTurns).toBe(1);
+    expect(result.state.lastMove).toMatchObject({ kind: "exchange", score: 0 });
+  });
+  it("stamps only the turns finished since the previous state", () => {
+    const state = {
+      ...createGame(
+        { boardSize: 15, timerSeconds: 0 },
+        ["A", "B"],
+        new SequenceRandom(),
+      ),
+      startedAt: 400,
+    };
+    const first = stampMoves(state, passTurn(state), 1_000);
+    const second = stampMoves(first, passTurn(passTurn(first)), 5_000);
+    expect(second.history?.map((move) => move.at)).toEqual([
+      1_000, 5_000, 5_000,
+    ]);
+    // The first turn runs from the game start; a run of passes made at once
+    // charges its time to the first of them.
+    expect(second.history?.map((move) => move.took)).toEqual([600, 4_000, 0]);
+    expect(second.turnStartedAt).toBe(5_000);
+    expect(second.lastMove).toBe(second.history?.at(-1));
+    expect(stampMoves(second, second, 9_000)).toBe(second);
+  });
+  it("times turns in games saved before turn starts were recorded", () => {
+    const state = createGame(
+      { boardSize: 15, timerSeconds: 0 },
+      ["A", "B"],
+      new SequenceRandom(),
+    );
+    expect(stampMoves(state, passTurn(state), 1_000).lastMove?.took).toBe(
+      undefined,
+    );
+    const passed = passTurn(state),
+      legacy = { ...passed, history: [{ ...passed.history![0]!, at: 2_000 }] };
+    expect(stampMoves(legacy, passTurn(legacy), 2_750).lastMove?.took).toBe(
+      750,
+    );
+  });
+});
+describe("ending and replay data", () => {
+  it("ends early by deducting each player's own remaining tiles", () => {
+    const state = createGame(
+      { boardSize: 15, timerSeconds: 0 },
+      ["A", "B"],
+      new SequenceRandom(),
+    );
+    const ended = endGame(state);
+    expect(ended.phase).toBe("results");
+    expect(ended.endReason).toBe("ended-early");
+    ended.players.forEach((player, index) => {
+      const held = state.players[index]!.rack.reduce(
+        (sum, tile) => sum + tile.value,
+        0,
+      );
+      expect(player.score).toBe(-held);
+    });
+    expect(endGame(ended)).toBe(ended);
+  });
+  it("records where a play put its tiles, without tile ids", () => {
+    const state = createGame(
+      { boardSize: 15, timerSeconds: 0 },
+      ["A", "B"],
+      new SequenceRandom(),
+    );
+    const placements = placementsFor(state, 2, 7, 7);
+    const played = playMove(state, placements, acceptAll);
+    expect(played.ok).toBe(true);
+    if (!played.ok) return;
+    const placed = played.state.lastMove?.placed ?? [];
+    expect(placed.map(({ row, col }) => [row, col])).toEqual(
+      placements.map(({ row, col }) => [row, col]),
+    );
+    expect(placed.every((tile) => !("id" in tile))).toBe(true);
   });
 });

@@ -1,14 +1,14 @@
 # Functional requirements v1
 
 ## Core objective
-A guest opens a public static site, creates or joins a private temporary room, plays a live English tile-based word game with 2-4 friends, and sees final scores. No registration, historic statistics or matchmaking.
+A guest opens a public static site, creates or joins a private temporary room, plays a live English tile-based word game with 2-8 friends (2-4 on one device), and sees final scores. No registration, historic statistics or matchmaking.
 
 ## Pages / states
 1. Welcome: nickname, Create Game, Join Game; invite URL prepopulates room.
 2. Create settings: board 15/21/32/custom 7..40; player cap 2..4; timer off/2m/5m; concise board-size impact note.
 3. Lobby: unique invite link with copy/share, roster with connected indicators, host controls (start, lock/unlock against new joiners), host can start once >=2 players have joined; settings locked once started.
 4. Game: zoomable board, scores, current player, private rack, bag count, provisional placement, Play, Recall, Shuffle, Exchange, Pass, rules, connection status, word details.
-5. Results: final scores, rankings, reason game ended, optional rematch creates new room, exit; no history after expiry.
+5. Results: final scores, rankings, reason game ended, exit; no history after expiry.
 
 ## Room behavior
 - Only guest nickname and session token. Nickname unique within room, normalized and length-limited.

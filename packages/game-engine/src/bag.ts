@@ -1,4 +1,4 @@
-import { LETTERS, LETTER_DISTRIBUTION } from "./config.js";
+import { LETTERS, LETTER_DISTRIBUTION, RACK_SIZE } from "./config.js";
 import type { Letter, RandomSource, Tile } from "./types.js";
 
 export function getBagTarget(size: number): number {
@@ -44,6 +44,27 @@ export function shuffle<T>(items: readonly T[], random: RandomSource): T[] {
     [result[i], result[j]] = [result[j] as T, result[i] as T];
   }
   return result;
+}
+/** Tiles in the bag for a board size, blanks included. */
+export function bagSize(size: number): number {
+  return Object.values(getDistribution(size)).reduce((a, b) => a + b, 0);
+}
+/** The most players any game may have. */
+export const MAX_PLAYERS = 8;
+/**
+ * The most players a board can take: each needs a rack to start and as
+ * much again left in the bag to draw from, so the game is still a game.
+ * Every board takes four.
+ */
+export function maxPlayersFor(size: number): number {
+  return Math.max(
+    4,
+    Math.min(MAX_PLAYERS, Math.floor(bagSize(size) / (RACK_SIZE * 2))),
+  );
+}
+/** Seats a room really has: its setting, capped by what the board allows. */
+export function seatsFor(capacity: number, boardSize: number): number {
+  return Math.min(capacity, maxPlayersFor(boardSize));
 }
 export function createBag(size: number, random: RandomSource): readonly Tile[] {
   const distribution = getDistribution(size);

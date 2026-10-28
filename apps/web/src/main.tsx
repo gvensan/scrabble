@@ -11,12 +11,19 @@ import { createRoot } from "react-dom/client";
 import {
   analyzePlay,
   BOARD_SIZE,
+  boardTiles,
+  maxPlayersFor,
   createGame,
+  endGame,
   exchangeTiles,
   getOpeningCells,
   passTurn,
   playMove,
   shuffle,
+  stampMoves,
+  summarizeGame,
+  withChallenge,
+  type GameSummary,
   type GameSettings,
   type GameState,
   type Letter,
@@ -35,8 +42,33 @@ import { checkWords, DictionaryError } from "./dictionary.js";
 import { recallLast } from "./draft.js";
 import { fittedCellSize } from "./layout.js";
 import { OnlineGame, type RoomSettings } from "./online.js";
-import { LastPlay, RulesDialog, ScorePreview } from "./panels.js";
+import {
+  ChallengeNotice,
+  ChallengeReview,
+  type ChallengeView,
+  MAX_CHALLENGES,
+} from "./challenge.js";
+import {
+  BoardLegend,
+  ExchangeDialog,
+  HistoryDialog,
+  LastPlay,
+  describeMove,
+  RulesDialog,
+  ScorelessEndDialog,
+  ScorelessWarning,
+  ScorePreview,
+  type HistoryMove,
+} from "./panels.js";
+import { canReplay, ReplayDialog } from "./replay.js";
 import { formatClock, useGameSounds } from "./sound.js";
+import {
+  PastGames,
+  rememberGame,
+  ResultsPage,
+  SummaryPage,
+  winnerTitle,
+} from "./summary.js";
 
 type Screen = "welcome" | "settings" | "lobby" | "game";
 type Theme = "garden" | "candy" | "midnight";
@@ -54,6 +86,28 @@ const premiumName = {
   DL: "Double letter",
 } as const;
 
+/** The leaderboard and moments of a finished same-device game. */
+function deviceSummary(game: GameState): GameSummary {
+  return summarizeGame({
+    code: null,
+    mode: "device",
+    boardSize: game.settings.boardSize,
+    timerSeconds: game.settings.timerSeconds,
+    startedAt: game.startedAt ?? null,
+    endedAt: game.history?.at(-1)?.at ?? Date.now(),
+    endReason: game.endReason,
+    players: game.players.map((player) => ({
+      name: player.name,
+      score: player.score,
+    })),
+    moves: (game.history ?? []).map((move) => ({
+      ...move,
+      player: move.playerIndex,
+    })),
+    tiles: boardTiles(game.board),
+  });
+}
+
 function App() {
   const sounds = useGameSounds();
   // null: local screens; otherwise the online flow, joining or creating.
@@ -62,6 +116,16 @@ function App() {
   >(() =>
     new URLSearchParams(location.search).has("room") ? { kind: "join" } : null,
   );
+  // A finished game being looked at again: by ?game=CODE or from the list.
+  const [viewing, setViewing] = useState<{
+    code: string | null;
+    summary?: GameSummary | undefined;
+  } | null>(() => {
+    const code = new URLSearchParams(location.search).get("game");
+    return code && /^[A-Za-z0-9]{6}$/.test(code)
+      ? { code: code.toUpperCase() }
+      : null;
+  });
   const [where, setWhere] = useState<"online" | "device">("online");
   const [screen, setScreen] = useState<Screen>("welcome"),
     [nickname, setNickname] = useState(
@@ -71,7 +135,9 @@ function App() {
       boardSize: 15,
       timerSeconds: 0,
     }),
-    [capacity, setCapacity] = useState<2 | 3 | 4>(2),
+    // 8 is "4+", online only: as many as the board allows, up to eight.
+    [capacity, setCapacity] = useState<2 | 3 | 4 | 8>(2),
+    [voice, setVoice] = useState(false),
     [checking, setChecking] = useState(false),
     [names, setNames] = useState(["", "Player 2"]),
     [ready, setReady] = useState([true, true]);
@@ -82,13 +148,28 @@ function App() {
     [selected, setSelected] = useState<string | null>(null),
     [draft, setDraft] = useState<Placement[]>([]),
     [draftError, setDraftError] = useState<string | null>(null),
+    // A play the dictionary refused, paused until the table settles it.
+    [pending, setPending] = useState<{
+      placements: readonly Placement[];
+      rejected: readonly string[];
+      stage: "decide" | "review";
+    } | null>(null),
+    // Challenges each player has used, and words the table approved.
+    [challengesUsed, setChallengesUsed] = useState<readonly number[]>([]),
+    [approvedWords, setApprovedWords] = useState<ReadonlySet<string>>(
+      () => new Set(),
+    ),
+    // Set when the game has just ended on six scoreless turns.
+    [scorelessEnd, setScorelessEnd] = useState(false),
     [message, setMessage] = useState("Choose a tile, then a board cell."),
     [concealed, setConcealed] = useState(true),
     [cellSize, setCellSize] = useState(() => fittedCellSize(15));
-  const [exchangeMode, setExchangeMode] = useState(false),
-    [exchangeIds, setExchangeIds] = useState<string[]>([]),
-    [confirm, setConfirm] = useState<"pass" | "exchange" | null>(null),
+  const [exchanging, setExchanging] = useState(false),
+    [confirmPass, setConfirmPass] = useState(false),
     [showRules, setShowRules] = useState(false),
+    [showHistory, setShowHistory] = useState(false),
+    [showReplay, setShowReplay] = useState(false),
+    [confirmEnd, setConfirmEnd] = useState(false),
     [blankTarget, setBlankTarget] = useState<{
       row: number;
       col: number;
@@ -99,6 +180,20 @@ function App() {
     latestGame = useRef<GameState | null>(null);
   latestGame.current = game;
   const current = game?.players[game.currentPlayerIndex],
+    challengeView: ChallengeView | null =
+      pending && game
+        ? {
+            stage: pending.stage,
+            rejected: pending.rejected,
+            playerName: current?.name ?? "This player",
+            ruler: "everyone at the table",
+            deadline: null,
+            challengesLeft: Math.max(
+              0,
+              MAX_CHALLENGES - (challengesUsed[game.currentPlayerIndex] ?? 0),
+            ),
+          }
+        : null,
     draftCells = useMemo(
       () => new Map(draft.map((item) => [`${item.row}:${item.col}`, item])),
       [draft],
@@ -133,6 +228,22 @@ function App() {
         }),
       );
     }, [draft, game]),
+    // What a challenged play would score if the table approves it.
+    reviewPlay = useMemo(() => {
+      if (!game || !pending) return null;
+      const result = playMove(
+        game,
+        pending.placements,
+        (words) => new Map(words.map((word) => [word, true])),
+      );
+      return result.ok
+        ? {
+            words: result.words,
+            score: result.score,
+            placed: result.state.lastMove?.placed ?? [],
+          }
+        : null;
+    }, [game, pending]),
     keys = useBoardKeys(game?.settings.boardSize ?? 15);
   usePinchZoom(boardViewport, cellSize, setCellSize, game?.phase === "active");
   useEffect(() => {
@@ -161,7 +272,9 @@ function App() {
     if (
       game?.phase !== "active" ||
       game.settings.timerSeconds === 0 ||
-      concealed
+      concealed ||
+      // A rejected word pauses the clock until the table settles it.
+      pending !== null
     ) {
       const timerSeconds = game?.settings.timerSeconds;
       setSecondsLeft(
@@ -187,7 +300,7 @@ function App() {
         }
         setGame((state) =>
           state?.phase === "active" && state.turnNumber === turnNumber
-            ? passTurn(state, "auto-pass")
+            ? stampMoves(state, passTurn(state, "auto-pass"), Date.now())
             : state,
         );
         setDraft([]);
@@ -200,7 +313,25 @@ function App() {
     tick();
     const timer = window.setInterval(tick, 250);
     return () => window.clearInterval(timer);
-  }, [concealed, game?.phase, game?.settings.timerSeconds, game?.turnNumber]);
+  }, [
+    concealed,
+    game?.phase,
+    game?.settings.timerSeconds,
+    game?.turnNumber,
+    pending,
+  ]);
+  const lastPhase = useRef(game?.phase);
+  useEffect(() => {
+    if (
+      lastPhase.current === "active" &&
+      game?.phase === "results" &&
+      game.endReason === "six-scoreless-turns"
+    )
+      setScorelessEnd(true);
+    if (lastPhase.current === "active" && game?.phase === "results")
+      rememberGame(deviceSummary(game));
+    lastPhase.current = game?.phase;
+  }, [game?.phase]);
   const continueWelcome = () => {
     const name = nickname.trim().slice(0, 20);
     if (!name) return;
@@ -209,35 +340,46 @@ function App() {
     setNames([name, "Player 2"]);
     setScreen("settings");
   };
-  const changeCapacity = (value: 2 | 3 | 4) => {
+  const changeCapacity = (value: 2 | 3 | 4 | 8) => {
     setCapacity(value);
+    // Same-device games seat at most four; "4+" is for online rooms.
+    const seats = Math.min(value, 4);
     setNames(
-      Array.from({ length: value }, (_, i) =>
+      Array.from({ length: seats }, (_, i) =>
         i === 0 ? nickname : (names[i] ?? `Player ${i + 1}`),
       ),
     );
-    setReady(Array.from({ length: value }, () => true));
+    setReady(Array.from({ length: seats }, () => true));
   };
   const start = () => {
     const players = names.map((name, i) => name.trim() || `Player ${i + 1}`);
-    setGame(createGame(settings, players, random));
+    setGame({
+      ...createGame(settings, players, random),
+      startedAt: Date.now(),
+      turnStartedAt: Date.now(),
+    });
     setConcealed(true);
+    setPending(null);
+    setChallengesUsed([]);
+    setApprovedWords(new Set());
     setScreen("game");
   };
   const next = (state: GameState, text: string) => {
-    setGame(state);
+    setGame((before) =>
+      before ? stampMoves(before, state, Date.now()) : state,
+    );
     setDraft([]);
     setDraftError(null);
     setSelected(null);
-    setExchangeMode(false);
-    setExchangeIds([]);
-    setConfirm(null);
+    setExchanging(false);
+    setConfirmPass(false);
     setConcealed(state.phase === "active");
     setMessage(text);
   };
   const placeTile = (tileId: string, row: number, col: number) => {
     if (
       !game ||
+      pending ||
       game.board[row]?.[col]?.tile ||
       draftCells.has(`${row}:${col}`)
     )
@@ -301,25 +443,90 @@ function App() {
       game,
       draft,
       (words) =>
-        new Map(words.map((word) => [word, validity.get(word) === true])),
+        new Map(
+          words.map((word) => [
+            word,
+            validity.get(word) === true || approvedWords.has(word),
+          ]),
+        ),
     );
     if (!result.ok) return reject(result.error);
+    if (result.rejected) {
+      // Pause with the tiles still on the board until it is settled.
+      sounds.play("error");
+      setPending({
+        placements: draft,
+        rejected: result.rejected,
+        stage: "decide",
+      });
+      setSelected(null);
+      setMessage("");
+      return;
+    }
     next(result.state, "Pass the device to the next player.");
   };
-  const doExchange = () => {
+  const settle = (outcome: "accepted" | "approved" | "rejected") => {
+    if (!game || !pending) return;
+    const refused = new Set(pending.rejected),
+      approve = outcome === "approved",
+      result = playMove(
+        game,
+        pending.placements,
+        (words) =>
+          new Map(words.map((word) => [word, approve || !refused.has(word)])),
+      );
+    if (!result.ok) return;
+    const name = current?.name ?? "This player",
+      words = pending.rejected.join(", ");
+    if (approve)
+      setApprovedWords(new Set([...approvedWords, ...pending.rejected]));
+    setPending(null);
+    next(
+      withChallenge(result.state, {
+        outcome,
+        challenged: pending.stage === "review",
+      }),
+      approve
+        ? `${words} approved: ${name} scores ${result.score}. Pass the device to the next player.`
+        : `${words} stays rejected: ${name}'s turn is lost. Pass the device to the next player.`,
+    );
+  };
+  const challengePlay = () => {
+    if (!game || !pending) return;
+    const index = game.currentPlayerIndex;
+    if ((challengesUsed[index] ?? 0) >= MAX_CHALLENGES) return;
+    setChallengesUsed(
+      game.players.map((_, i) =>
+        i === index ? (challengesUsed[i] ?? 0) + 1 : (challengesUsed[i] ?? 0),
+      ),
+    );
+    setPending({ ...pending, stage: "review" });
+  };
+  const doExchange = (ids: readonly string[]) => {
     if (!game) return;
-    const result = exchangeTiles(game, exchangeIds, random);
+    const result = exchangeTiles(game, ids, random);
     if (!result.ok) {
       setMessage(result.error);
-      setConfirm(null);
+      setExchanging(false);
       sounds.play("error");
       return;
     }
     next(
       result.state,
-      `Exchanged ${exchangeIds.length} tile${exchangeIds.length === 1 ? "" : "s"}.`,
+      `Exchanged ${ids.length} tile${ids.length === 1 ? "" : "s"}.`,
     );
   };
+  if (viewing)
+    return (
+      <SummaryPage
+        code={viewing.code}
+        stored={viewing.summary}
+        onBack={() => {
+          setViewing(null);
+          history.replaceState(null, "", location.pathname);
+        }}
+      />
+    );
   if (online)
     return (
       <OnlineGame
@@ -345,7 +552,7 @@ function App() {
             <em>Make your move.</em>
           </h1>
           <p className="lede">
-            A warm word-board game for two to four people. No accounts, just
+            A warm word-board game for two to eight people. No accounts, just
             pass the device and play.
           </p>
           <label className="field">
@@ -381,6 +588,11 @@ function App() {
           <small>
             Invite friends with a link, or pass one device around the table.
           </small>
+          <PastGames
+            onOpen={(past) =>
+              setViewing({ code: past.code, summary: past.summary })
+            }
+          />
         </section>
       </main>
     );
@@ -407,7 +619,10 @@ function App() {
               <button
                 className={where === "device" ? "active" : ""}
                 aria-pressed={where === "device"}
-                onClick={() => setWhere("device")}
+                onClick={() => {
+                  setWhere("device");
+                  if (capacity === 8) changeCapacity(4);
+                }}
               >
                 <b>Same device</b>
                 <small>
@@ -481,16 +696,31 @@ function App() {
             <fieldset>
               <legend>Players</legend>
               <div className="segments">
-                {([2, 3, 4] as const).map((value) => (
+                {(where === "online"
+                  ? ([2, 3, 4, 8] as const)
+                  : ([2, 3, 4] as const)
+                ).map((value) => (
                   <button
                     key={value}
                     className={capacity === value ? "active" : ""}
+                    aria-pressed={capacity === value}
+                    title={
+                      value === 8
+                        ? `More than four: up to ${maxPlayersFor(settings.boardSize)} on a ${settings.boardSize}×${settings.boardSize} board`
+                        : undefined
+                    }
                     onClick={() => changeCapacity(value)}
                   >
-                    {value}
+                    {value === 8 ? "4+" : value}
                   </button>
                 ))}
               </div>
+              {capacity === 8 && where === "online" && (
+                <small className="field-hint">
+                  Up to {maxPlayersFor(settings.boardSize)} players on this
+                  board.
+                </small>
+              )}
             </fieldset>
             <fieldset>
               <legend>Turn timer</legend>
@@ -514,6 +744,28 @@ function App() {
                 ))}
               </div>
             </fieldset>
+            {where === "online" && (
+              <fieldset>
+                <legend>Voice chat</legend>
+                <div className="segments">
+                  {([false, true] as const).map((value) => (
+                    <button
+                      key={String(value)}
+                      className={voice === value ? "active" : ""}
+                      aria-pressed={voice === value}
+                      onClick={() => setVoice(value)}
+                    >
+                      {value ? "On" : "Off"}
+                    </button>
+                  ))}
+                </div>
+                <small className="field-hint">
+                  {voice
+                    ? "Players can talk live. Each one chooses to join and can mute."
+                    : "No microphones. Players can still see each move live."}
+                </small>
+              </fieldset>
+            )}
           </div>
           <button
             className="primary wide"
@@ -521,7 +773,7 @@ function App() {
               where === "online"
                 ? setOnline({
                     kind: "create",
-                    settings: { ...settings, capacity },
+                    settings: { ...settings, capacity, voice },
                   })
                 : setScreen("lobby")
             }
@@ -596,32 +848,48 @@ function App() {
       </main>
     );
   if (!game) return null;
+  const moves: HistoryMove[] = (game.history ?? []).map((move) => ({
+    ...move,
+    player: move.playerIndex,
+    name: game.players[move.playerIndex]?.name ?? "Player",
+  }));
   if (game.phase === "results") {
-    const rank = [...game.players].sort((a, b) => b.score - a.score);
+    const summary = deviceSummary(game),
+      endNote =
+        game.endReason === "rack-emptied"
+          ? "A rack and the bag ran empty."
+          : game.endReason === "ended-early"
+            ? "The game was ended early. Each player lost the value of the tiles they still held."
+            : "Six scoreless turns ended the game.";
     return (
-      <main className="shell results">
-        <section className="card">
-          <p className="eyebrow">Game complete</p>
-          <h1>{rank[0]?.name} wins!</h1>
-          <p>
-            {game.endReason === "rack-emptied"
-              ? "A rack and the bag ran empty."
-              : "Six scoreless turns ended the game."}
-          </p>
-          <p>
-            {game.lastMove &&
-              `Last move: ${game.players[game.lastMove.playerIndex]?.name ?? "A player"} ${game.lastMove.kind === "play" ? `played ${game.lastMove.words.map((item) => item.word).join(", ")} for ${game.lastMove.score}` : game.lastMove.kind === "exchange" ? "exchanged tiles" : "passed"}.`}
-          </p>
-          <div className="standings">
-            {rank.map((player, i) => (
-              <div key={player.id}>
-                <span>{i + 1}</span>
-                <b>{player.name}</b>
-                <strong>{player.score}</strong>
-                <small>points</small>
-              </div>
-            ))}
-          </div>
+      <>
+        <ResultsPage
+          eyebrow="Game complete"
+          title={winnerTitle(summary)}
+          note={
+            <>
+              <p>{endNote}</p>
+              {game.lastMove && (
+                <p>
+                  Last move:{" "}
+                  {describeMove(
+                    game.players[game.lastMove.playerIndex]?.name ?? "A player",
+                    game.lastMove,
+                  )}
+                </p>
+              )}
+            </>
+          }
+          summary={summary}
+        >
+          {canReplay(moves) && (
+            <button
+              className="secondary wide"
+              onClick={() => setShowReplay(true)}
+            >
+              Replay the game
+            </button>
+          )}
           <button
             className="primary wide"
             onClick={() => {
@@ -640,8 +908,35 @@ function App() {
           >
             Exit
           </button>
-        </section>
-      </main>
+        </ResultsPage>
+        {showReplay && (
+          <ReplayDialog
+            boardSize={game.settings.boardSize}
+            premiums={game.board.map((row) => row.map((cell) => cell.premium))}
+            players={game.players.map((player) => ({
+              name: player.name,
+              finalScore: player.score,
+            }))}
+            moves={moves}
+            startedAt={game.startedAt}
+            endNote={endNote}
+            onClose={() => setShowReplay(false)}
+          />
+        )}
+        {scorelessEnd && (
+          <ScorelessEndDialog
+            turns={moves.slice(-6).map((move) => ({ name: move.name, move }))}
+            players={game.players.map((player, index) => ({
+              name: player.name,
+              moveTotal: moves
+                .filter((move) => move.player === index)
+                .reduce((sum, move) => sum + move.score, 0),
+              final: player.score,
+            }))}
+            onOk={() => setScorelessEnd(false)}
+          />
+        )}
+      </>
     );
   }
   const rack = current?.rack ?? [];
@@ -667,10 +962,13 @@ function App() {
           <small>Bag</small>
           <b>{game.bag.length}</b>
         </div>
+        <button className="end-game-button" onClick={() => setConfirmEnd(true)}>
+          End game
+        </button>
         <button
           className="help-button"
-          aria-label="Rules and dictionary"
-          title="Rules and dictionary"
+          aria-label="Rules of play"
+          title="Rules of play"
           onClick={() => setShowRules(true)}
         >
           ?
@@ -696,6 +994,16 @@ function App() {
           </div>
         </div>
         <div className="board-scroll" ref={boardViewport}>
+          {challengeView && (
+            <ChallengeNotice
+              view={challengeView}
+              mine
+              now={0}
+              variant="board"
+              onAccept={() => settle("accepted")}
+              onChallenge={challengePlay}
+            />
+          )}
           {draftError && draft.length > 0 && (
             <div className="board-error" role="alert">
               <button
@@ -773,7 +1081,7 @@ function App() {
                     style={{ width: cellSize, height: cellSize }}
                     aria-label={`Row ${r + 1}, column ${c + 1}: ${
                       tile
-                        ? `${draftError && pending ? "invalid provisional tile " : pending ? "your provisional tile " : ""}${letter}, ${tile.value} points`
+                        ? `${draftError && pending ? "invalid provisional tile " : pending ? "your provisional tile " : ""}${letter}, ${tile.value} points${cell.premium ? `, on ${premiumName[cell.premium].toLowerCase()}` : ""}`
                         : cell.premium
                           ? premiumName[cell.premium]
                           : starts.has(`${r}:${c}`)
@@ -792,6 +1100,11 @@ function App() {
                       <>
                         <b>{letter}</b>
                         <small>{tile.value}</small>
+                        {cell.premium && (
+                          <i className="tile-bonus" aria-hidden="true">
+                            {cell.premium}
+                          </i>
+                        )}
                       </>
                     ) : starts.has(`${r}:${c}`) ? (
                       <span className="start-star" aria-hidden="true">
@@ -805,6 +1118,7 @@ function App() {
               }),
             )}
           </div>
+          <BoardLegend />
         </div>
       </section>
       <aside>
@@ -864,40 +1178,42 @@ function App() {
               : null
           }
           move={game.lastMove ?? null}
+          onHistory={() => setShowHistory(true)}
         />
-        <p className="status" role="status">
-          {message}
-        </p>
+        {!pending && <ScorelessWarning count={game.scorelessTurns} />}
+        {challengeView ? (
+          <ChallengeNotice
+            view={challengeView}
+            mine
+            now={0}
+            variant="side"
+            onAccept={() => settle("accepted")}
+            onChallenge={challengePlay}
+          />
+        ) : (
+          <p className="status" role="status">
+            {message}
+          </p>
+        )}
         <div className="rack-title">
           <b>Your rack</b>
-          <small>
-            {exchangeMode ? "Select tiles to exchange" : "Tap tile, then board"}
-          </small>
+          <small>Tap tile, then board</small>
         </div>
         <div className="rack">
           {rack.map((tile) => {
             const used = draft.some((item) => item.tileId === tile.id),
-              chosen = exchangeIds.includes(tile.id),
               active = selected === tile.id;
             return (
               <button
                 key={tile.id}
                 disabled={used}
-                draggable={!used && !exchangeMode}
-                className={active || chosen ? "active" : ""}
+                draggable={!used}
+                className={active ? "active" : ""}
                 onDragStart={(event) => {
                   event.dataTransfer.setData("text/tile-id", tile.id);
                   event.dataTransfer.effectAllowed = "move";
                 }}
-                onClick={() => {
-                  if (exchangeMode)
-                    setExchangeIds(
-                      chosen
-                        ? exchangeIds.filter((id) => id !== tile.id)
-                        : [...exchangeIds, tile.id],
-                    );
-                  else setSelected(active ? null : tile.id);
-                }}
+                onClick={() => setSelected(active ? null : tile.id)}
               >
                 <b>{tile.letter ?? "□"}</b>
                 <small>{tile.value}</small>
@@ -922,7 +1238,7 @@ function App() {
           </button>
           <button
             className="primary"
-            disabled={!draft.length || checking}
+            disabled={!draft.length || checking || pending !== null}
             onClick={() => void submit()}
           >
             {checking ? "Checking…" : "Play word"}
@@ -945,43 +1261,64 @@ function App() {
             Shuffle
           </button>
           <button
+            disabled={pending !== null}
             onClick={() => {
-              setExchangeMode(!exchangeMode);
-              setExchangeIds([]);
+              setExchanging(true);
+              sounds.play("warning");
             }}
           >
-            {exchangeMode ? "Cancel" : "Exchange"}
+            Exchange
           </button>
           <button
+            disabled={pending !== null}
             onClick={() => {
-              setConfirm("pass");
+              setConfirmPass(true);
               sounds.play("warning");
             }}
           >
             Pass
           </button>
         </div>
-        {exchangeMode && (
-          <button
-            className="primary wide"
-            disabled={!exchangeIds.length}
-            onClick={() => {
-              setConfirm("exchange");
-              sounds.play("warning");
-            }}
-          >
-            Exchange {exchangeIds.length} selected
-          </button>
-        )}
         <small className="side-hint">Words are checked with WordSoHard.</small>
       </aside>
-      {showRules && <RulesDialog onClose={() => setShowRules(false)} />}
+      {pending?.stage === "review" && challengeView && (
+        <ChallengeReview
+          view={challengeView}
+          words={reviewPlay?.words ?? []}
+          score={reviewPlay?.score ?? 0}
+          board={game.board}
+          placed={reviewPlay?.placed ?? []}
+          now={0}
+          onApprove={() => settle("approved")}
+          onReject={() => settle("rejected")}
+        />
+      )}
+      {showRules && (
+        <RulesDialog mode="local" onClose={() => setShowRules(false)} />
+      )}
+      {showHistory && (
+        <HistoryDialog
+          moves={moves}
+          startedAt={game.startedAt}
+          onClose={() => setShowHistory(false)}
+        />
+      )}
       {concealed && (
         <Overlay>
           <p className="eyebrow">Pass the device</p>
           <h2>{current?.name}, you're up</h2>
           <p>Other players, look away before the rack appears.</p>
-          <button className="primary wide" onClick={() => setConcealed(false)}>
+          <button
+            className="primary wide"
+            onClick={() => {
+              // On a shared device the turn starts once its player can see
+              // the rack, so handing the device over is not counted.
+              setGame(
+                (state) => state && { ...state, turnStartedAt: Date.now() },
+              );
+              setConcealed(false);
+            }}
+          >
             Reveal my rack
           </button>
         </Overlay>
@@ -1004,27 +1341,50 @@ function App() {
           </button>
         </Overlay>
       )}
-      {confirm && (
+      {exchanging && (
+        <ExchangeDialog
+          rack={rack}
+          bagCount={game.bag.length}
+          onCancel={() => setExchanging(false)}
+          onConfirm={doExchange}
+        />
+      )}
+      {confirmEnd && (
         <Overlay>
-          <h2>
-            {confirm === "pass"
-              ? "Pass this turn?"
-              : `Exchange ${exchangeIds.length} tiles?`}
-          </h2>
-          <p>This ends the current turn.</p>
+          <h2>End the game now?</h2>
+          <p>
+            Use this when everyone agrees to stop. Each player loses the value
+            of the tiles they still hold, and the highest score wins.
+          </p>
           <div className="actions">
-            <button className="secondary" onClick={() => setConfirm(null)}>
+            <button className="secondary" onClick={() => setConfirmEnd(false)}>
               Keep playing
             </button>
             <button
               className="danger"
-              onClick={() =>
-                confirm === "pass"
-                  ? next(passTurn(game), `${current?.name} passed.`)
-                  : doExchange()
-              }
+              onClick={() => {
+                setConfirmEnd(false);
+                setGame(endGame(game));
+              }}
             >
-              Confirm
+              End game
+            </button>
+          </div>
+        </Overlay>
+      )}
+      {confirmPass && (
+        <Overlay>
+          <h2>Pass this turn?</h2>
+          <p>You score 0 and play moves to the next player.</p>
+          <div className="actions">
+            <button className="secondary" onClick={() => setConfirmPass(false)}>
+              Keep playing
+            </button>
+            <button
+              className="danger"
+              onClick={() => next(passTurn(game), `${current?.name} passed.`)}
+            >
+              Pass
             </button>
           </div>
         </Overlay>
